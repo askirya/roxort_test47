@@ -317,20 +317,40 @@ async def get_number(callback: types.CallbackQuery):
                 await callback.answer("❌ Ошибка: данные не найдены", show_alert=True)
                 return
             
+            # Создаем ссылку на чат
+            chat_link = f"https://t.me/c/{str(transaction_id).zfill(10)}"
+            
+            # Создаем клавиатуру с кнопкой для перехода в чат
+            chat_keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                [
+                    InlineKeyboardButton(text="💬 Перейти в чат", url=chat_link),
+                    InlineKeyboardButton(text="⚠️ Открыть спор", callback_data=f"open_dispute:{transaction_id}")
+                ],
+                [
+                    InlineKeyboardButton(text="⭐️ Оставить отзыв", callback_data=f"leave_review:{transaction_id}")
+                ]
+            ])
+            
             # Уведомляем продавца о запросе номера
             try:
                 await callback.bot.send_message(
                     seller.telegram_id,
                     f"📱 Покупатель запросил номер для {available_services[listing.service]}.\n"
-                    f"Пожалуйста, отправьте номер телефона.",
+                    f"Пожалуйста, отправьте номер телефона в чате:\n{chat_link}",
                     reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
-                        InlineKeyboardButton(text="📱 Отправить номер", callback_data=f"send_number:{transaction_id}")
+                        InlineKeyboardButton(text="💬 Перейти в чат", url=chat_link)
                     ]])
                 )
             except Exception as e:
                 logger.error(f"Failed to notify seller {seller.telegram_id}: {e}")
             
-            await callback.answer("✅ Запрос на получение номера отправлен продавцу", show_alert=True)
+            await callback.message.edit_text(
+                f"✅ Запрос на получение номера отправлен продавцу!\n\n"
+                f"Сервис: {available_services[listing.service]}\n"
+                f"Продавец: @{seller.username or 'Пользователь'}\n\n"
+                "Вы можете общаться с продавцом в отдельном чате:",
+                reply_markup=chat_keyboard
+            )
             
         except Exception as e:
             logger.error(f"Error in get_number: {e}")

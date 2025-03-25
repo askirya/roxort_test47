@@ -3,7 +3,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton
 from database.db import async_session
-from database.models import User, Transaction, Dispute, PhoneListing, Review
+from database.models import User, Transaction, Dispute, PhoneListing, Review, PromoCode
 from datetime import datetime, timedelta
 from sqlalchemy import select, func, and_, or_
 import logging
@@ -22,6 +22,8 @@ class AdminStates(StatesGroup):
     entering_amount = State()
     entering_message = State()
     selecting_listing = State()
+    creating_promo = State()
+    entering_promo_code = State()
 
 def get_admin_keyboard():
     """Создает клавиатуру администратора"""
@@ -39,6 +41,7 @@ def get_admin_keyboard():
             KeyboardButton(text="🔒 Заблокировать пользователя")
         ],
         [
+            KeyboardButton(text="🎁 Управление промокодами"),
             KeyboardButton(text="❌ Выйти из панели админа")
         ]
     ]
@@ -511,6 +514,132 @@ async def cancel_admin_action(callback: types.CallbackQuery, state: FSMContext):
         "❌ Действие отменено.",
         reply_markup=get_admin_keyboard()
     )
+
+@router.callback_query(lambda c: c.data == "promo_codes")
+async def show_promo_menu(callback: types.CallbackQuery):
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="➕ Создать промокод", callback_data="create_promo")],
+        [InlineKeyboardButton(text="📋 Список промокодов", callback_data="list_promos")],
+        [InlineKeyboardButton(text="↩️ Назад", callback_data="back_to_admin")]
+    ])
+    
+    await callback.message.edit_text(
+        "🎁 Управление промокодами\n\n"
+        "Выберите действие:",
+        reply_markup=keyboard
+    )
+
+@router.callback_query(lambda c: c.data == "create_promo")
+async def start_create_promo(callback: types.CallbackQuery, state: FSMContext):
+    await state.set_state(AdminStates.creating_promo)
+    await callback.message.edit_text(
+        "Введите сумму промокода в ROXY:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_promo")
+        ]])
+    )
+
+@router.message(AdminStates.creating_promo)
+async def process_promo_amount(message: types.Message, state: FSMContext):
+    try:
+        amount = float(message.text)
+        if amount <= 0:
+            raise ValueError
+        
+        await state.update_data(promo_amount=amount)
+        await state.set_state(AdminStates.entering_promo_code)
+        
+        await message.answer(
+            "Введите код промокода (например: SUMMER2024):",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_promo")
+            ]])
+        )
+    except ValueError:
+        await message.answer(
+            "❌ Пожалуйста, введите корректную сумму (например: 10.5):",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_promo")
+            ]])
+        )
+
+@router.message(AdminStates.entering_promo_code)
+async def process_promo_code(message: types.Message, state: FSMContext):
+    code = message.text.upper()
+    
+    async with async_session() as session:
+        # Проверяем, не существует ли уже такой промокод
+        existing = await session.scalar(
+            select(PromoCode).where(PromoCode.code == code)
+        )
+        
+        if existing:
+            await message.answer(
+                "❌ Такой промокод уже существует. Введите другой код:",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                    InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_promo")
+                ]])
+            )
+            return
+    
+    data = await state.get_data()
+    amount = data['promo_amount']
+    
+    # Создаем промокод
+    promo = PromoCode(
+        code=code,
+        amount=amount,
+        created_by=message.from_user.id
+    )
+    
+    async with async_session() as session:
+        session.add(promo)
+        await session.commit()
+    
+    await state.clear()
+    await message.answer(
+        f"✅ Промокод успешно создан!\n\n"
+        f"Код: {code}\n"
+        f"Сумма: {amount} ROXY",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="↩️ Назад", callback_data="promo_codes")
+        ]])
+    )
+
+@router.callback_query(lambda c: c.data == "list_promos")
+async def show_promos(callback: types.CallbackQuery):
+    async with async_session() as session:
+        promos = await session.scalars(
+            select(PromoCode).order_by(PromoCode.created_at.desc())
+        )
+        promos = promos.all()
+        
+        if not promos:
+            await callback.message.edit_text(
+                "📋 Список промокодов пуст.",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                    InlineKeyboardButton(text="↩️ Назад", callback_data="promo_codes")
+                ]])
+            )
+            return
+        
+        text = "📋 Список промокодов:\n\n"
+        for promo in promos:
+            status = "✅ Использован" if promo.is_used else "🆕 Активен"
+            used_by = f"\nИспользован: @{promo.used_by}" if promo.used_by else ""
+            text += f"Код: {promo.code}\nСумма: {promo.amount} ROXY\n{status}{used_by}\n\n"
+        
+        await callback.message.edit_text(
+            text,
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                InlineKeyboardButton(text="↩️ Назад", callback_data="promo_codes")
+            ]])
+        )
+
+@router.callback_query(lambda c: c.data == "cancel_promo")
+async def cancel_promo(callback: types.CallbackQuery, state: FSMContext):
+    await state.clear()
+    await show_promo_menu(callback)
 
 def register_admin_handlers(dp: Dispatcher):
     """Регистрация обработчиков для администраторов"""

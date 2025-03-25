@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Float, DateTime, ForeignKey, Boolean, Text, Index
+from sqlalchemy import Column, Integer, String, Float, DateTime, ForeignKey, Boolean, Text, Index, BigInteger
 from sqlalchemy.orm import declarative_base, relationship
 from datetime import datetime
 from .db import Base
@@ -114,4 +114,16 @@ class Review(Base):
         Index('idx_review_transaction', 'transaction_id'),
         Index('idx_review_reviewer', 'reviewer_id'),
         Index('idx_review_reviewed', 'reviewed_id'),
-    ) 
+    )
+
+class PromoCode(Base):
+    __tablename__ = 'promo_codes'
+    
+    id = Column(Integer, primary_key=True)
+    code = Column(String, unique=True, nullable=False)
+    amount = Column(Float, nullable=False)  # Сумма в ROXY
+    is_used = Column(Boolean, default=False)
+    used_by = Column(BigInteger, nullable=True)  # telegram_id пользователя, использовавшего промокод
+    created_at = Column(DateTime, default=datetime.utcnow)
+    expires_at = Column(DateTime, nullable=True)
+    created_by = Column(BigInteger, nullable=False)  # telegram_id админа, создавшего промокод 

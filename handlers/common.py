@@ -1,44 +1,48 @@
 from aiogram import Router, types, Dispatcher
-from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, Message
+from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, Message, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.fsm.context import FSMContext
 from database.db import async_session
-from database.models import User, Transaction, Review
+from database.models import User, Transaction, Review, PromoCode
 from sqlalchemy import select, or_
 from config import ADMIN_IDS
 from sqlalchemy.ext.asyncio import AsyncSession
 import logging
 from aiogram.filters import Command
 from datetime import datetime
+from aiogram.fsm.state import StatesGroup, State
 
 router = Router()
 logger = logging.getLogger(__name__)
 
+class UserStates(StatesGroup):
+    entering_promo = State()
+    entering_withdraw_amount = State()
+    entering_usdt_address = State()
+
 def get_main_keyboard(user_id: int = None):
     keyboard = [
-        [
-            KeyboardButton(text="👤 Профиль")
-        ],
         [
             KeyboardButton(text="📱 Купить номер"),
             KeyboardButton(text="📱 Продать номер")
         ],
         [
-            KeyboardButton(text="💰 Баланс"),
-            KeyboardButton(text="💸 Вывести средства")
+            KeyboardButton(text="💳 Баланс"),
+            KeyboardButton(text="💳 Вывод в USDT")
         ],
         [
-            KeyboardButton(text="⚠️ Споры"),
+            KeyboardButton(text="🎁 Активировать промокод"),
             KeyboardButton(text="⭐️ Отзывы")
+        ],
+        [
+            KeyboardButton(text="⚖️ Споры"),
+            KeyboardButton(text="👤 Профиль")
         ]
     ]
     
-    if isinstance(user_id, int) and user_id in ADMIN_IDS:
-        keyboard.append([KeyboardButton(text="🔑 Панель администратора")])
+    if user_id in ADMIN_IDS:
+        keyboard.append([KeyboardButton(text="👑 Админ панель")])
     
-    return ReplyKeyboardMarkup(
-        keyboard=keyboard,
-        resize_keyboard=True
-    )
+    return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
 
 def get_start_keyboard():
     return ReplyKeyboardMarkup(
@@ -336,6 +340,219 @@ async def handle_withdraw_amount(message: Message, state: FSMContext):
                 resize_keyboard=True
             )
         )
+
+@router.message(F.text == "🎁 Активировать промокод")
+async def activate_promo(message: types.Message):
+    if not await check_user_registered(message.from_user.id):
+        await message.answer(
+            "❌ Вы не зарегистрированы!\n"
+            "Пожалуйста, пройдите регистрацию:",
+            reply_markup=get_main_keyboard()
+        )
+        return
+    
+    await message.answer(
+        "Введите промокод:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_promo")
+        ]])
+    )
+    await state.set_state(UserStates.entering_promo)
+
+@router.message(UserStates.entering_promo)
+async def process_promo(message: types.Message, state: FSMContext):
+    code = message.text.upper()
+    
+    async with async_session() as session:
+        # Проверяем промокод
+        promo = await session.scalar(
+            select(PromoCode).where(PromoCode.code == code)
+        )
+        
+        if not promo:
+            await message.answer(
+                "❌ Промокод не найден. Попробуйте еще раз:",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                    InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_promo")
+                ]])
+            )
+            return
+        
+        if promo.is_used:
+            await message.answer(
+                "❌ Этот промокод уже использован.",
+                reply_markup=get_main_keyboard(message.from_user.id)
+            )
+            await state.clear()
+            return
+        
+        if promo.expires_at and promo.expires_at < datetime.utcnow():
+            await message.answer(
+                "❌ Срок действия промокода истек.",
+                reply_markup=get_main_keyboard(message.from_user.id)
+            )
+            await state.clear()
+            return
+        
+        # Активируем промокод
+        user = await session.get(User, message.from_user.id)
+        user.balance += promo.amount
+        promo.is_used = True
+        promo.used_by = message.from_user.id
+        
+        await session.commit()
+        
+        await message.answer(
+            f"✅ Промокод успешно активирован!\n"
+            f"На ваш баланс начислено {promo.amount} ROXY",
+            reply_markup=get_main_keyboard(message.from_user.id)
+        )
+        await state.clear()
+
+@router.callback_query(lambda c: c.data == "cancel_promo")
+async def cancel_promo(callback: types.CallbackQuery, state: FSMContext):
+    await state.clear()
+    await callback.message.edit_text(
+        "❌ Активация промокода отменена.",
+        reply_markup=get_main_keyboard(callback.from_user.id)
+    )
+
+@router.message(F.text == "💳 Вывод в USDT")
+async def start_withdraw(message: types.Message, state: FSMContext):
+    if not await check_user_registered(message.from_user.id):
+        await message.answer(
+            "❌ Вы не зарегистрированы!\n"
+            "Пожалуйста, пройдите регистрацию:",
+            reply_markup=get_main_keyboard()
+        )
+        return
+    
+    async with async_session() as session:
+        user = await session.get(User, message.from_user.id)
+        if user.balance < 100:
+            await message.answer(
+                "❌ Минимальная сумма для вывода: 100 ROXY\n"
+                f"Ваш баланс: {user.balance} ROXY",
+                reply_markup=get_main_keyboard(message.from_user.id)
+            )
+            return
+    
+    await message.answer(
+        "Введите сумму для вывода в ROXY (минимум 100):",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_withdraw")
+        ]])
+    )
+    await state.set_state(UserStates.entering_withdraw_amount)
+
+@router.message(UserStates.entering_withdraw_amount)
+async def process_withdraw_amount(message: types.Message, state: FSMContext):
+    try:
+        amount = float(message.text)
+        if amount < 100:
+            await message.answer(
+                "❌ Минимальная сумма для вывода: 100 ROXY\n"
+                "Попробуйте еще раз:",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                    InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_withdraw")
+                ]])
+            )
+            return
+        
+        async with async_session() as session:
+            user = await session.get(User, message.from_user.id)
+            if user.balance < amount:
+                await message.answer(
+                    "❌ Недостаточно средств на балансе.\n"
+                    f"Ваш баланс: {user.balance} ROXY\n"
+                    "Попробуйте еще раз:",
+                    reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                        InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_withdraw")
+                    ]])
+                )
+                return
+        
+        await state.update_data(withdraw_amount=amount)
+        await state.set_state(UserStates.entering_usdt_address)
+        
+        await message.answer(
+            "Введите ваш USDT (TRC20) адрес:",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_withdraw")
+            ]])
+        )
+    except ValueError:
+        await message.answer(
+            "❌ Пожалуйста, введите корректную сумму (например: 100):",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_withdraw")
+            ]])
+        )
+
+@router.message(UserStates.entering_usdt_address)
+async def process_withdraw_address(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    amount = data['withdraw_amount']
+    usdt_amount = amount / 10  # Конвертация ROXY в USDT (10:1)
+    
+    async with async_session() as session:
+        user = await session.get(User, message.from_user.id)
+        
+        # Списываем средства
+        user.balance -= amount
+        
+        # Создаем транзакцию
+        transaction = Transaction(
+            user_id=user.telegram_id,
+            amount=amount,
+            type="withdraw",
+            status="pending",
+            created_at=datetime.utcnow(),
+            details={
+                "usdt_address": message.text,
+                "usdt_amount": usdt_amount
+            }
+        )
+        
+        session.add(transaction)
+        await session.commit()
+        
+        # Уведомляем админов
+        for admin_id in ADMIN_IDS:
+            try:
+                await message.bot.send_message(
+                    admin_id,
+                    f"💰 Новая заявка на вывод!\n\n"
+                    f"Пользователь: @{user.username or 'Пользователь'}\n"
+                    f"Сумма: {amount} ROXY ({usdt_amount} USDT)\n"
+                    f"Адрес: {message.text}\n\n"
+                    "Пожалуйста, обработайте заявку в личных сообщениях с пользователем.",
+                    reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                        InlineKeyboardButton(
+                            text="💬 Написать пользователю",
+                            url=f"tg://user?id={user.telegram_id}"
+                        )
+                    ]])
+                )
+            except Exception as e:
+                logger.error(f"Failed to notify admin {admin_id}: {e}")
+        
+        await message.answer(
+            f"✅ Заявка на вывод создана!\n\n"
+            f"Сумма: {amount} ROXY ({usdt_amount} USDT)\n"
+            f"Адрес: {message.text}\n\n"
+            "Администратор свяжется с вами для подтверждения вывода.",
+            reply_markup=get_main_keyboard(message.from_user.id)
+        )
+        await state.clear()
+
+@router.callback_query(lambda c: c.data == "cancel_withdraw")
+async def cancel_withdraw(callback: types.CallbackQuery, state: FSMContext):
+    await state.clear()
+    await callback.message.edit_text(
+        "❌ Вывод средств отменен.",
+        reply_markup=get_main_keyboard(callback.from_user.id)
+    )
 
 def register_common_handlers(dp: Dispatcher):
     """Регистрация обработчиков общих команд"""
