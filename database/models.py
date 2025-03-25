@@ -71,28 +71,18 @@ class Transaction(Base):
     )
 
 class Dispute(Base):
-    __tablename__ = 'disputes'
+    __tablename__ = "disputes"
     
     id = Column(Integer, primary_key=True)
-    transaction_id = Column(Integer, ForeignKey('transactions.id', ondelete='CASCADE'))
-    user_id = Column(Integer, ForeignKey('users.telegram_id', ondelete='CASCADE'))
-    description = Column(Text, nullable=False)
-    status = Column(String, default='open')  # open, resolved, closed
+    transaction_id = Column(Integer, ForeignKey("transactions.id"), nullable=False)
+    initiator_id = Column(Integer, nullable=False)  # ID пользователя, открывшего спор
+    status = Column(String, default="active")  # active, resolved, closed
+    winner_id = Column(Integer, nullable=True)  # ID победителя спора
     created_at = Column(DateTime, default=datetime.utcnow)
     resolved_at = Column(DateTime, nullable=True)
-    resolved_by = Column(Integer, ForeignKey('users.telegram_id', ondelete='SET NULL'), nullable=True)
-    resolution = Column(Text, nullable=True)
     
     # Связи
-    transaction = relationship("Transaction", back_populates="disputes")
-    user = relationship("User", foreign_keys=[user_id], back_populates="disputes_created")
-    resolver = relationship("User", foreign_keys=[resolved_by], back_populates="disputes_resolved")
-    
-    # Индексы
-    __table_args__ = (
-        Index('idx_dispute_status', 'status'),
-        Index('idx_dispute_transaction', 'transaction_id'),
-    )
+    transaction = relationship("Transaction", back_populates="dispute")
 
 class Review(Base):
     __tablename__ = 'reviews'

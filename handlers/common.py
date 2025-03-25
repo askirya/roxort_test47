@@ -652,6 +652,17 @@ async def open_dispute(callback: types.CallbackQuery):
                 await callback.answer("❌ У вас нет доступа к этой сделке", show_alert=True)
                 return
             
+            # Проверяем, нет ли уже активного спора
+            existing_dispute = await session.scalar(
+                select(Dispute).where(
+                    Dispute.transaction_id == transaction_id,
+                    Dispute.status == "active"
+                )
+            )
+            if existing_dispute:
+                await callback.answer("❌ По этой сделке уже открыт спор", show_alert=True)
+                return
+            
             # Создаем спор
             dispute = Dispute(
                 transaction_id=transaction_id,
@@ -681,6 +692,27 @@ async def open_dispute(callback: types.CallbackQuery):
                 "Администратор рассмотрит спор и примет решение.\n"
                 "Средства заморожены до решения спора."
             )
+            
+            # Уведомляем админов
+            for admin_id in ADMIN_IDS:
+                try:
+                    await callback.bot.send_message(
+                        admin_id,
+                        f"⚖️ Открыт новый спор!\n\n"
+                        f"ID спора: {dispute.id}\n"
+                        f"ID транзакции: {transaction_id}\n"
+                        f"Сумма: {transaction.amount:.2f} ROXY\n"
+                        f"Инициатор: @{callback.from_user.username or 'Пользователь'}\n"
+                        f"Дата: {dispute.created_at.strftime('%d.%m.%Y %H:%M')}",
+                        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                            InlineKeyboardButton(
+                                text="⚖️ Рассмотреть спор",
+                                callback_data=f"resolve_dispute:{dispute.id}"
+                            )
+                        ]])
+                    )
+                except Exception as e:
+                    logger.error(f"Failed to notify admin {admin_id}: {e}")
             
     except Exception as e:
         logger.error(f"Error in open_dispute: {e}")
@@ -746,18 +778,22 @@ async def process_review(callback: types.CallbackQuery):
             
             # Обновляем рейтинг
             if action == "like":
-                target_user.rating += 1
+                # Увеличиваем рейтинг, но не выше 5.0
+                target_user.rating = min(5.0, target_user.rating + 0.5)
                 await callback.answer("👍 Вы поставили лайк!")
             else:
-                target_user.rating -= 1
+                # Уменьшаем рейтинг, но не ниже 0.0
+                target_user.rating = max(0.0, target_user.rating - 0.5)
                 await callback.answer("👎 Вы поставили дизлайк!")
             
             await session.commit()
             
             # Обновляем сообщение
+            stars = "⭐️" * round(target_user.rating)
             await callback.message.edit_text(
                 "✅ Спасибо за отзыв!\n\n"
-                f"Текущий рейтинг пользователя: {target_user.rating:.1f}"
+                f"Текущий рейтинг пользователя:\n"
+                f"{stars} ({target_user.rating:.1f})"
             )
             
     except Exception as e:
