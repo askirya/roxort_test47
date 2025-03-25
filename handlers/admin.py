@@ -515,22 +515,36 @@ async def cancel_admin_action(callback: types.CallbackQuery, state: FSMContext):
         reply_markup=get_admin_keyboard()
     )
 
-@router.callback_query(lambda c: c.data == "promo_codes")
-async def show_promo_menu(callback: types.CallbackQuery):
+@router.message(F.text == "🎁 Управление промокодами")
+async def show_promo_menu(message: types.Message):
+    """Показывает меню управления промокодами"""
+    if message.from_user.id not in ADMIN_IDS:
+        return
+    
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="➕ Создать промокод", callback_data="create_promo")],
         [InlineKeyboardButton(text="📋 Список промокодов", callback_data="list_promos")],
         [InlineKeyboardButton(text="↩️ Назад", callback_data="back_to_admin")]
     ])
     
-    await callback.message.edit_text(
+    await message.answer(
         "🎁 Управление промокодами\n\n"
         "Выберите действие:",
         reply_markup=keyboard
     )
 
+@router.callback_query(lambda c: c.data == "back_to_admin")
+async def back_to_admin(callback: types.CallbackQuery):
+    """Возврат в главное меню админ-панели"""
+    await callback.message.edit_text(
+        "👑 Панель администратора\n\n"
+        "Выберите действие:",
+        reply_markup=get_admin_keyboard()
+    )
+
 @router.callback_query(lambda c: c.data == "create_promo")
 async def start_create_promo(callback: types.CallbackQuery, state: FSMContext):
+    """Начинает процесс создания промокода"""
     await state.set_state(AdminStates.creating_promo)
     await callback.message.edit_text(
         "Введите сумму промокода в ROXY:",
@@ -541,6 +555,7 @@ async def start_create_promo(callback: types.CallbackQuery, state: FSMContext):
 
 @router.message(AdminStates.creating_promo)
 async def process_promo_amount(message: types.Message, state: FSMContext):
+    """Обрабатывает ввод суммы промокода"""
     try:
         amount = float(message.text)
         if amount <= 0:
@@ -565,6 +580,7 @@ async def process_promo_amount(message: types.Message, state: FSMContext):
 
 @router.message(AdminStates.entering_promo_code)
 async def process_promo_code(message: types.Message, state: FSMContext):
+    """Обрабатывает ввод кода промокода"""
     code = message.text.upper()
     
     async with async_session() as session:
@@ -608,6 +624,7 @@ async def process_promo_code(message: types.Message, state: FSMContext):
 
 @router.callback_query(lambda c: c.data == "list_promos")
 async def show_promos(callback: types.CallbackQuery):
+    """Показывает список всех промокодов"""
     async with async_session() as session:
         promos = await session.scalars(
             select(PromoCode).order_by(PromoCode.created_at.desc())
@@ -638,12 +655,20 @@ async def show_promos(callback: types.CallbackQuery):
 
 @router.callback_query(lambda c: c.data == "cancel_promo")
 async def cancel_promo(callback: types.CallbackQuery, state: FSMContext):
+    """Отменяет создание промокода"""
     await state.clear()
-    await show_promo_menu(callback)
+    await show_promo_menu(callback.message)
 
 def register_admin_handlers(dp: Dispatcher):
     """Регистрация обработчиков для администраторов"""
     dp.include_router(router)
+    
+    # Регистрируем все обработчики промокодов
+    dp.callback_query.register(show_promo_menu, F.data == "promo_codes")
+    dp.callback_query.register(start_create_promo, F.data == "create_promo")
+    dp.callback_query.register(show_promos, F.data == "list_promos")
+    dp.callback_query.register(cancel_promo, F.data == "cancel_promo")
+    dp.callback_query.register(back_to_admin, F.data == "back_to_admin")
 
 async def cmd_admin(message: Message):
     """Обработчик команды /admin"""

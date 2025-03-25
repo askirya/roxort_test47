@@ -37,16 +37,6 @@ async def start_selling(message: types.Message, state: FSMContext):
                 )
                 return
             
-            # Проверяем минимальный баланс
-            if user.balance < 0.1:
-                await message.answer(
-                    "❌ Недостаточно средств на балансе для создания объявления.\n"
-                    f"Минимальная стоимость: 0.1 ROXY\n"
-                    f"Ваш баланс: {user.balance:.2f} ROXY",
-                    reply_markup=get_main_keyboard()
-                )
-                return
-            
             # Показываем список доступных сервисов
             keyboard = []
             for service in SERVICES:
