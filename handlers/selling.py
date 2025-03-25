@@ -8,8 +8,12 @@ from sqlalchemy import select
 from handlers.common import get_main_keyboard
 from .services import available_services, get_services_keyboard
 from log import logger
+from aiogram import Dispatcher
+from aiogram.filters import Command
+from aiogram.types import Message
 
 router = Router()
+logger = logging.getLogger(__name__)
 
 class SellingStates(StatesGroup):
     choosing_service = State()
@@ -18,36 +22,35 @@ class SellingStates(StatesGroup):
     entering_price = State()
     confirming = State()
 
+@router.message(F.text == "📱 Продать номер")
 async def start_selling(message: types.Message, state: FSMContext):
     """Начать процесс продажи номера"""
-    session = async_session()
-    try:
-        query = select(User).where(User.telegram_id == message.from_user.id)
-        result = await session.execute(query)
-        user = result.scalar_one_or_none()
-        
-        if not user:
+    async with async_session() as session:
+        try:
+            query = select(User).where(User.telegram_id == message.from_user.id)
+            result = await session.execute(query)
+            user = result.scalar_one_or_none()
+            
+            if not user:
+                await message.answer(
+                    "❌ Вы не зарегистрированы!\n"
+                    "Пожалуйста, пройдите регистрацию сначала.",
+                    reply_markup=get_main_keyboard()
+                )
+                return
+            
+            await state.set_state(SellingStates.choosing_service)
             await message.answer(
-                "❌ Вы не зарегистрированы!\n"
-                "Пожалуйста, пройдите регистрацию сначала.",
+                "📱 Выберите сервис для продажи номера:",
+                reply_markup=get_services_keyboard()
+            )
+        except Exception as e:
+            logger.error(f"Error in start_selling: {e}")
+            await message.answer(
+                "❌ Произошла ошибка при начале продажи.\n"
+                "Пожалуйста, попробуйте позже.",
                 reply_markup=get_main_keyboard()
             )
-            return
-        
-        await state.set_state(SellingStates.choosing_service)
-        await message.answer(
-            "📱 Выберите сервис для продажи номера:",
-            reply_markup=get_services_keyboard()
-        )
-    except Exception as e:
-        logger.error(f"Error in start_selling: {e}")
-        await message.answer(
-            "❌ Произошла ошибка при начале продажи.\n"
-            "Пожалуйста, попробуйте позже.",
-            reply_markup=get_main_keyboard()
-        )
-    finally:
-        await session.close()
 
 @router.callback_query(lambda c: c.data == "cancel_sell")
 async def cancel_selling(callback: types.CallbackQuery, state: FSMContext):
@@ -185,39 +188,46 @@ async def process_price(message: types.Message, state: FSMContext):
 async def confirm_listing(callback: types.CallbackQuery, state: FSMContext):
     data = await state.get_data()
     
-    session = async_session()
-    try:
-        # Создаем объявление
-        listing = PhoneListing(
-            seller_id=callback.from_user.id,
-            service=data['service'],
-            phone_number=data['phone'],
-            rental_period=data['period'],
-            price=data['price'],
-            is_active=True
-        )
-        session.add(listing)
-        await session.commit()
-        
-        await callback.message.edit_text(
-            "✅ Объявление успешно создано!\n\n"
-            f"Сервис: {available_services[data['service']]}\n"
-            f"Номер: {data['phone']}\n"
-            f"Срок аренды: {data['period']} часов\n"
-            f"Цена: {data['price']}₽\n\n"
-            "Ожидайте покупателя! 🎉"
-        )
-        
-        await callback.message.answer(
-            "Вернуться в главное меню:",
-            reply_markup=get_main_keyboard(callback.from_user.id)
-        )
-        
-        await state.clear()
-        
-    except Exception as e:
-        await session.rollback()
-        logger.error(f"Error creating listing: {e}")
-        await callback.answer("❌ Произошла ошибка при создании объявления", show_alert=True)
-    finally:
-        await session.close() 
+    async with async_session() as session:
+        try:
+            # Создаем объявление
+            listing = PhoneListing(
+                seller_id=callback.from_user.id,
+                service=data['service'],
+                phone_number=data['phone'],
+                rental_period=data['period'],
+                price=data['price'],
+                is_active=True
+            )
+            session.add(listing)
+            await session.commit()
+            
+            await callback.message.edit_text(
+                "✅ Объявление успешно создано!\n\n"
+                f"Сервис: {available_services[data['service']]}\n"
+                f"Номер: {data['phone']}\n"
+                f"Срок аренды: {data['period']} часов\n"
+                f"Цена: {data['price']}₽\n\n"
+                "Ожидайте покупателя! 🎉"
+            )
+            
+            await callback.message.answer(
+                "Вернуться в главное меню:",
+                reply_markup=get_main_keyboard(callback.from_user.id)
+            )
+            
+            await state.clear()
+            
+        except Exception as e:
+            await session.rollback()
+            logger.error(f"Error creating listing: {e}")
+            await callback.answer("❌ Произошла ошибка при создании объявления", show_alert=True)
+
+async def cmd_sell(message: Message, state: FSMContext):
+    """Обработчик команды /sell"""
+    await start_selling(message, state)
+
+def register_selling_handlers(dp: Dispatcher):
+    """Регистрация обработчиков для продажи"""
+    dp.include_router(router)
+    dp.message.register(cmd_sell, Command("sell")) 

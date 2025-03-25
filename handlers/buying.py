@@ -2,7 +2,7 @@ from aiogram import Router, types, F
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
-from database.db import get_session, async_session
+from database.db import async_session
 from database.models import User, PhoneListing, Transaction
 from datetime import datetime
 from sqlalchemy import select, and_
@@ -293,7 +293,7 @@ async def process_service_choice(message: types.Message, state: FSMContext):
         await message.answer("❌ Пожалуйста, выберите сервис из списка.")
         return
 
-    async with get_session() as session:
+    async with async_session() as session:
         query = select(PhoneListing).where(
             and_(
                 PhoneListing.service == message.text,
@@ -315,7 +315,7 @@ async def process_service_choice(message: types.Message, state: FSMContext):
         await show_listing(message, state, listings[0])
 
 async def show_listing(message: types.Message, state: FSMContext, listing: PhoneListing):
-    async with get_session() as session:
+    async with async_session() as session:
         seller = await session.get(User, listing.seller_id)
         
         await message.answer(
@@ -341,14 +341,14 @@ async def show_next_listing(callback: types.CallbackQuery, state: FSMContext):
     current_index += 1
     await state.update_data(current_listing_index=current_index)
     
-    async with get_session() as session:
+    async with async_session() as session:
         listing = await session.get(PhoneListing, listings[current_index])
         if listing:
             await show_listing(callback.message, state, listing)
 
 @router.message(F.text == "💰 Сначала дешевые")
 async def sort_by_price_asc(message: types.Message, state: FSMContext):
-    async with get_session() as session:
+    async with async_session() as session:
         query = select(PhoneListing).where(
             PhoneListing.is_active == True
         ).order_by(PhoneListing.price.asc())
@@ -357,7 +357,7 @@ async def sort_by_price_asc(message: types.Message, state: FSMContext):
 
 @router.message(F.text == "💰 Сначала дорогие")
 async def sort_by_price_desc(message: types.Message, state: FSMContext):
-    async with get_session() as session:
+    async with async_session() as session:
         query = select(PhoneListing).where(
             PhoneListing.is_active == True
         ).order_by(PhoneListing.price.desc())
@@ -366,7 +366,7 @@ async def sort_by_price_desc(message: types.Message, state: FSMContext):
 
 @router.message(F.text == "🔄 Сначала новые")
 async def sort_by_date(message: types.Message, state: FSMContext):
-    async with get_session() as session:
+    async with async_session() as session:
         query = select(PhoneListing).where(
             PhoneListing.is_active == True
         ).order_by(PhoneListing.created_at.desc())
@@ -388,7 +388,7 @@ async def process_sorted_listings(message: types.Message, state: FSMContext, ses
 async def confirm_purchase(callback: types.CallbackQuery, state: FSMContext):
     listing_id = int(callback.data.split("_")[2])
     
-    async with get_session() as session:
+    async with async_session() as session:
         # Получаем объявление
         query = select(PhoneListing).where(PhoneListing.id == listing_id)
         result = await session.execute(query)
@@ -448,7 +448,7 @@ async def confirm_purchase(callback: types.CallbackQuery, state: FSMContext):
 async def process_purchase(callback: types.CallbackQuery, state: FSMContext):
     listing_id = int(callback.data.split("_")[2])
     
-    async with get_session() as session:
+    async with async_session() as session:
         # Получаем объявление и проверяем его актуальность
         query = select(PhoneListing).where(PhoneListing.id == listing_id)
         result = await session.execute(query)
@@ -554,5 +554,6 @@ async def cmd_buy(message: Message, state: FSMContext):
         await message.answer("Произошла ошибка. Пожалуйста, попробуйте позже.")
 
 def register_buying_handlers(dp: Dispatcher):
-    """Регистрация обработчиков для покупки номеров"""
+    """Регистрация обработчиков для покупки"""
+    dp.include_router(router)
     dp.message.register(cmd_buy, Command("buy")) 
