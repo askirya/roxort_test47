@@ -2,7 +2,7 @@ from aiogram import Router, types, Dispatcher, F
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 from aiogram.fsm.context import FSMContext
 from database.db import async_session
-from database.models import User, Transaction, Review, PromoCode, Dispute
+from database.models import User, Transaction, Review, PromoCode, Dispute, PhoneListing
 from sqlalchemy import select, or_, func
 from config import ADMIN_IDS
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -270,65 +270,74 @@ async def handle_withdraw(message: Message, state: FSMContext):
     )
 
 @router.message(F.text == "⚖️ Споры")
-async def show_disputes(message: Message):
-    """Показывает активные споры пользователя"""
+async def show_disputes(message: types.Message):
+    """Показывает список активных споров"""
     try:
         async with async_session() as session:
-            user = await session.scalar(
-                select(User).where(User.telegram_id == message.from_user.id)
-            )
-            
-            if not user:
-                await message.answer("Ошибка: пользователь не найден")
-                return
-            
-            # Получаем активные споры
-            disputes = await session.execute(
-                select(Dispute)
-                .where(
+            # Получаем споры, где пользователь является участником
+            disputes = await session.scalars(
+                select(Dispute).where(
                     or_(
-                        Dispute.buyer_id == user.id,
-                        Dispute.seller_id == user.id
+                        Dispute.buyer_id == message.from_user.id,
+                        Dispute.seller_id == message.from_user.id
                     )
-                )
-                .where(Dispute.status == "active")
+                ).order_by(Dispute.created_at.desc())
             )
-            disputes = disputes.scalars().all()
+            disputes = disputes.all()
             
             if not disputes:
-                await message.answer("У вас нет активных споров")
+                await message.answer(
+                    "📋 У вас нет активных споров.",
+                    reply_markup=get_main_keyboard()
+                )
                 return
             
-            # Формируем сообщение для каждого спора
+            # Формируем список споров
+            text = "📋 Ваши споры:\n\n"
             for dispute in disputes:
+                # Определяем роль пользователя в споре
+                role = "Покупатель" if dispute.buyer_id == message.from_user.id else "Продавец"
+                
+                # Получаем информацию о транзакции
                 transaction = await session.get(Transaction, dispute.transaction_id)
                 if not transaction:
                     continue
                 
-                other_user = await session.get(
-                    User,
-                    transaction.buyer_id if user.id == transaction.seller_id else transaction.seller_id
-                )
+                # Получаем информацию о листинге
+                listing = await session.get(PhoneListing, transaction.listing_id)
+                if not listing:
+                    continue
                 
-                text = (
-                    f"⚖️ Спор #{dispute.id}\n"
-                    f"Сделка: #{transaction.id}\n"
+                # Получаем информацию о второй стороне
+                other_party_id = dispute.seller_id if role == "Покупатель" else dispute.buyer_id
+                other_party = await session.get(User, other_party_id)
+                
+                text += (
+                    f"ID спора: {dispute.id}\n"
+                    f"Роль: {role}\n"
+                    f"Сервис: {available_services[listing.service]}\n"
                     f"Сумма: {transaction.amount:.2f} ROXY\n"
-                    f"Оппонент: @{other_user.username}\n"
-                    f"Статус: {dispute.status}\n"
-                    f"Причина: {dispute.reason}"
+                    f"Оппонент: @{other_party.username or 'Пользователь'}\n"
+                    f"Статус: {dispute.status}\n\n"
                 )
-                
-                keyboard = InlineKeyboardMarkup(inline_keyboard=[
-                    [InlineKeyboardButton(text="📝 Добавить комментарий", callback_data=f"dispute_comment_{dispute.id}")],
-                    [InlineKeyboardButton(text="✅ Завершить спор", callback_data=f"resolve_dispute_{dispute.id}")]
-                ])
-                
-                await message.answer(text, reply_markup=keyboard)
-                
+            
+            # Добавляем кнопку для создания нового спора
+            keyboard = [
+                [InlineKeyboardButton(text="⚖️ Открыть спор", callback_data="open_dispute")],
+                [InlineKeyboardButton(text="↩️ Назад", callback_data="back_to_main")]
+            ]
+            
+            await message.answer(
+                text,
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
+            )
+            
     except Exception as e:
-        logger.error(f"Ошибка при показе споров: {e}")
-        await message.answer("Произошла ошибка при получении списка споров")
+        logger.error(f"Error in show_disputes: {e}")
+        await message.answer(
+            "❌ Произошла ошибка при получении списка споров.",
+            reply_markup=get_main_keyboard()
+        )
 
 @router.message(lambda message: message.text == "⭐️ Отзывы")
 async def handle_reviews(message: Message):

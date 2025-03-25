@@ -154,20 +154,6 @@ async def process_price(message: types.Message, state: FSMContext):
         
         # Создаем объявление
         async with async_session() as session:
-            user = await session.get(User, message.from_user.id)
-            if user.balance < 0.1:
-                await message.answer(
-                    "❌ Недостаточно средств на балансе для создания объявления.\n"
-                    f"Минимальная стоимость: 0.1 ROXY\n"
-                    f"Ваш баланс: {user.balance:.2f} ROXY",
-                    reply_markup=get_main_keyboard()
-                )
-                return
-            
-            # Списываем комиссию
-            user.balance -= 0.1
-            await session.commit()
-            
             # Создаем объявление
             listing = PhoneListing(
                 seller_id=message.from_user.id,
@@ -191,8 +177,7 @@ async def process_price(message: types.Message, state: FSMContext):
                 f"Сервис: {available_services[service_id]}\n"
                 f"Номер: {data['phone']}\n"
                 f"Срок аренды: {data['period']} часов\n"
-                f"Цена: {price:.2f} ROXY\n"
-                f"Комиссия: 0.1 ROXY\n\n"
+                f"Цена: {price:.2f} ROXY\n\n"
                 f"Подтвердите создание объявления:",
                 reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
             )
