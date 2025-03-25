@@ -22,71 +22,69 @@ class SellingStates(StatesGroup):
     entering_period = State()
     entering_price = State()
     confirming = State()
+    selecting_service = State()
 
 @router.message(F.text == "📱 Продать номер")
 async def start_selling(message: types.Message, state: FSMContext):
-    """Начать процесс продажи номера"""
-    async with async_session() as session:
-        try:
-            query = select(User).where(User.telegram_id == message.from_user.id)
-            result = await session.execute(query)
-            user = result.scalar_one_or_none()
-            
+    """Начинает процесс продажи номера"""
+    try:
+        async with async_session() as session:
+            user = await session.get(User, message.from_user.id)
             if not user:
                 await message.answer(
-                    "❌ Вы не зарегистрированы!\n"
-                    "Пожалуйста, пройдите регистрацию сначала.",
+                    "❌ Пожалуйста, сначала зарегистрируйтесь.",
                     reply_markup=get_main_keyboard()
                 )
                 return
             
-            await state.set_state(SellingStates.choosing_service)
+            # Проверяем минимальный баланс
+            if user.balance < 0.1:
+                await message.answer(
+                    "❌ Недостаточно средств на балансе для создания объявления.\n"
+                    f"Минимальная стоимость: 0.1 ROXY\n"
+                    f"Ваш баланс: {user.balance:.2f} ROXY",
+                    reply_markup=get_main_keyboard()
+                )
+                return
+            
+            # Показываем список доступных сервисов
+            keyboard = []
+            for service in SERVICES:
+                keyboard.append([InlineKeyboardButton(
+                    text=service,
+                    callback_data=f"select_service:{service}"
+                )])
+            
+            keyboard.append([InlineKeyboardButton(
+                text="❌ Отмена",
+                callback_data="cancel_selling"
+            )])
+            
+            await state.set_state(SellingStates.selecting_service)
             await message.answer(
-                "📱 Выберите сервис для продажи номера:",
-                reply_markup=get_services_keyboard()
+                "Выберите сервис для продажи номера:",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
             )
-        except Exception as e:
-            logger.error(f"Error in start_selling: {e}")
-            await message.answer(
-                "❌ Произошла ошибка при начале продажи.\n"
-                "Пожалуйста, попробуйте позже.",
-                reply_markup=get_main_keyboard()
-            )
-
-@router.callback_query(lambda c: c.data == "cancel_sell")
-async def cancel_selling(callback: types.CallbackQuery, state: FSMContext):
-    await state.clear()
-    try:
-        await callback.message.delete()
-        await callback.message.answer(
-            "❌ Создание объявления отменено.",
-            reply_markup=get_main_keyboard(callback.from_user.id)
-        )
     except Exception as e:
-        logger.error(f"Error in cancel_selling: {e}")
-        await callback.message.edit_text(
-            "❌ Создание объявления отменено.",
-            reply_markup=get_main_keyboard(callback.from_user.id)
+        logger.error(f"Error in start_selling: {e}")
+        await message.answer(
+            "❌ Произошла ошибка при начале процесса продажи.",
+            reply_markup=get_main_keyboard()
         )
 
-@router.callback_query(lambda c: c.data.startswith("service_"))
-async def process_service_choice(callback: types.CallbackQuery, state: FSMContext):
-    service = callback.data.split("_")[1]
-    if service not in available_services:
-        await callback.answer("❌ Неверный сервис", show_alert=True)
-        return
-    
+@router.callback_query(lambda c: c.data.startswith("select_service:"))
+async def process_service_selection(callback: types.CallbackQuery, state: FSMContext):
+    """Обрабатывает выбор сервиса"""
+    service = callback.data.split(":")[1]
     await state.update_data(service=service)
-    await state.set_state(SellingStates.entering_phone)
-    
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[[
-        InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_sell")
-    ]])
     
     await callback.message.edit_text(
-        f"📱 Введите номер телефона для {available_services[service]}:\n"
-        "Формат: +7XXXXXXXXXX",
-        reply_markup=keyboard
+        f"Вы выбрали сервис: {service}\n\n"
+        "Введите цену в ROXY (минимум 0.1 ROXY):",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(
+            text="❌ Отмена",
+            callback_data="cancel_selling"
+        )]])
     )
 
 @router.message(SellingStates.entering_phone)
@@ -142,66 +140,86 @@ async def process_period(message: types.Message, state: FSMContext):
     ]])
     
     await message.answer(
-        "💰 Введите цену в рублях (минимум 10₽):",
+        "💰 Введите цену в рублях (минимум 0.1 ROXY):",
         reply_markup=keyboard
     )
 
 @router.message(SellingStates.entering_price)
-async def process_price(message: Message, state: FSMContext):
-    """Обработка введенной цены"""
+async def process_price(message: types.Message, state: FSMContext):
+    """Обрабатывает ввод цены"""
     try:
         price = float(message.text)
-        
-        # Проверяем минимальную цену (0.1 ROXY)
         if price < 0.1:
             await message.answer(
-                "❌ Минимальная цена: 0.1 ROXY\n"
-                "Пожалуйста, введите корректную цену:",
-                reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
-                    InlineKeyboardButton(text="↩️ Отмена", callback_data="cancel_selling")
-                ]])
+                "❌ Минимальная цена: 0.1 ROXY",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(
+                    text="❌ Отмена",
+                    callback_data="cancel_selling"
+                )]])
             )
             return
-            
-        # Сохраняем цену
-        await state.update_data(price=price)
         
-        # Получаем данные о номере
         data = await state.get_data()
-        service = data.get('service')
-        phone_number = data.get('phone')
+        service = data['service']
         
-        # Формируем сообщение для подтверждения
-        text = (
-            f"📱 Подтвердите создание объявления:\n\n"
-            f"Сервис: {service}\n"
-            f"Номер: {phone_number}\n"
-            f"Цена: {price:.2f} ROXY\n\n"
-            f"💱 Курс: 10 ROXY = 1 USDT"
-        )
-        
-        keyboard = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="✅ Подтвердить", callback_data="confirm_listing")],
-            [InlineKeyboardButton(text="❌ Отменить", callback_data="cancel_selling")]
-        ])
-        
-        await message.answer(text, reply_markup=keyboard)
-        await state.set_state(SellingStates.confirming)
-        
+        # Создаем объявление
+        async with async_session() as session:
+            user = await session.get(User, message.from_user.id)
+            if user.balance < 0.1:
+                await message.answer(
+                    "❌ Недостаточно средств на балансе для создания объявления.\n"
+                    f"Минимальная стоимость: 0.1 ROXY\n"
+                    f"Ваш баланс: {user.balance:.2f} ROXY",
+                    reply_markup=get_main_keyboard()
+                )
+                return
+            
+            # Списываем комиссию
+            user.balance -= 0.1
+            await session.commit()
+            
+            # Создаем объявление
+            listing = PhoneListing(
+                seller_id=message.from_user.id,
+                service=service,
+                phone_number=data['phone'],
+                rental_period=data['period'],
+                price=price,
+                is_active=True
+            )
+            session.add(listing)
+            await session.commit()
+            
+            # Показываем подтверждение
+            keyboard = [
+                [InlineKeyboardButton(text="✅ Подтвердить", callback_data=f"confirm_listing:{listing.id}")],
+                [InlineKeyboardButton(text="❌ Отменить", callback_data="cancel_selling")]
+            ]
+            
+            await message.answer(
+                f"📱 Создание объявления:\n\n"
+                f"Сервис: {service}\n"
+                f"Номер: {data['phone']}\n"
+                f"Срок аренды: {data['period']} часов\n"
+                f"Цена: {price:.2f} ROXY\n"
+                f"Комиссия: 0.1 ROXY\n\n"
+                f"Подтвердите создание объявления:",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
+            )
+            
     except ValueError:
         await message.answer(
-            "❌ Пожалуйста, введите корректное число",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
-                InlineKeyboardButton(text="↩️ Отмена", callback_data="cancel_selling")
-            ]])
+            "❌ Пожалуйста, введите корректное число.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(
+                text="❌ Отмена",
+                callback_data="cancel_selling"
+            )]])
         )
     except Exception as e:
-        logger.error(f"Ошибка при обработке цены: {e}")
+        logger.error(f"Error in process_price: {e}")
         await message.answer(
-            "Произошла ошибка. Попробуйте еще раз или отмените создание объявления.",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
-                InlineKeyboardButton(text="↩️ Отмена", callback_data="cancel_selling")
-            ]])
+            "❌ Произошла ошибка при обработке цены.",
+            reply_markup=get_main_keyboard()
         )
 
 @router.callback_query(lambda c: c.data == "confirm_sell")

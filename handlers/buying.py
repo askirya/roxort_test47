@@ -79,7 +79,60 @@ async def show_services_callback(callback: types.CallbackQuery, state: FSMContex
 
 @router.message(lambda message: message.text == "📱 Купить номер")
 async def start_buying(message: types.Message, state: FSMContext):
-    await show_services_message(message, state)
+    """Начинает процесс покупки номера"""
+    try:
+        async with async_session() as session:
+            user = await session.get(User, message.from_user.id)
+            if not user:
+                await message.answer(
+                    "❌ Пожалуйста, сначала зарегистрируйтесь.",
+                    reply_markup=get_main_keyboard()
+                )
+                return
+            
+            # Получаем активные объявления
+            listings_query = select(PhoneListing).where(
+                and_(
+                    PhoneListing.is_active == True,
+                    PhoneListing.seller_id != message.from_user.id
+                )
+            ).order_by(PhoneListing.created_at.desc())
+            listings_result = await session.execute(listings_query)
+            listings = listings_result.scalars().all()
+            
+            if not listings:
+                await message.answer(
+                    "❌ В данный момент нет доступных номеров для покупки.",
+                    reply_markup=get_main_keyboard()
+                )
+                return
+            
+            # Формируем список объявлений
+            keyboard = []
+            for listing in listings:
+                seller = await session.get(User, listing.seller_id)
+                keyboard.append([InlineKeyboardButton(
+                    text=f"{listing.service} | {listing.price:.2f} ROXY | Продавец: @{seller.username or 'Пользователь'}",
+                    callback_data=f"buy_listing:{listing.id}"
+                )])
+            
+            keyboard.append([InlineKeyboardButton(
+                text="❌ Отмена",
+                callback_data="cancel_buying"
+            )])
+            
+            await state.set_state(BuyingStates.selecting_listing)
+            await message.answer(
+                "📱 Доступные номера для покупки:\n\n"
+                "Выберите номер из списка:",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
+            )
+    except Exception as e:
+        logger.error(f"Error in start_buying: {e}")
+        await message.answer(
+            "❌ Произошла ошибка при загрузке списка номеров.",
+            reply_markup=get_main_keyboard()
+        )
 
 @router.callback_query(F.data == "buy_number")
 async def handle_buy_callback(callback: types.CallbackQuery, state: FSMContext):
@@ -172,62 +225,26 @@ async def show_listings(callback: types.CallbackQuery, state: FSMContext):
 
 @router.callback_query(lambda c: c.data.startswith("buy_listing:"))
 async def process_buy(callback: types.CallbackQuery, state: FSMContext):
-    listing_id = int(callback.data.split(":")[1])
-    
-    async with async_session() as session:
-        try:
-            # Проверяем существование объявления
+    """Обрабатывает покупку номера"""
+    try:
+        listing_id = int(callback.data.split(":")[1])
+        
+        async with async_session() as session:
             listing = await session.get(PhoneListing, listing_id)
-            if not listing or not listing.is_active:
-                await callback.message.edit_text(
-                    "❌ Это объявление уже недоступно.",
-                    reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
-                        InlineKeyboardButton(text="↩️ Назад", callback_data="buy_cancel")
-                    ]])
-                )
+            if not listing or listing.is_active == False:
+                await callback.answer("❌ Объявление не найдено или уже продано", show_alert=True)
                 return
             
-            # Получаем информацию о пользователях
             buyer = await session.get(User, callback.from_user.id)
             seller = await session.get(User, listing.seller_id)
             
-            if not buyer or not seller:
-                await callback.message.edit_text(
-                    "❌ Ошибка: пользователь не найден.",
-                    reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
-                        InlineKeyboardButton(text="↩️ Назад", callback_data="buy_cancel")
-                    ]])
-                )
-                return
-            
-            # Проверяем баланс
+            # Проверяем баланс покупателя
             if buyer.balance < listing.price:
-                await callback.message.edit_text(
-                    "❌ Недостаточно средств на балансе.\n"
-                    f"Необходимо: {listing.price} USDT\n"
-                    f"Ваш баланс: {buyer.balance} USDT",
-                    reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
-                        InlineKeyboardButton(text="↩️ Назад", callback_data="buy_cancel")
-                    ]])
-                )
-                return
-            
-            # Проверяем, нет ли уже активной транзакции для этого объявления
-            existing_transaction = await session.scalar(
-                select(Transaction).where(
-                    and_(
-                        Transaction.listing_id == listing_id,
-                        Transaction.status == "completed"
-                    )
-                )
-            )
-            
-            if existing_transaction:
-                await callback.message.edit_text(
-                    "❌ Это объявление уже было куплено.",
-                    reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
-                        InlineKeyboardButton(text="↩️ Назад", callback_data="buy_cancel")
-                    ]])
+                await callback.answer(
+                    f"❌ Недостаточно средств на балансе\n"
+                    f"Требуется: {listing.price:.2f} ROXY\n"
+                    f"Ваш баланс: {buyer.balance:.2f} ROXY",
+                    show_alert=True
                 )
                 return
             
@@ -237,10 +254,9 @@ async def process_buy(callback: types.CallbackQuery, state: FSMContext):
                 buyer_id=buyer.telegram_id,
                 seller_id=seller.telegram_id,
                 amount=listing.price,
-                status="completed",
-                created_at=datetime.utcnow(),
-                completed_at=datetime.utcnow()
+                status="completed"
             )
+            session.add(transaction)
             
             # Обновляем балансы
             buyer.balance -= listing.price
@@ -249,55 +265,46 @@ async def process_buy(callback: types.CallbackQuery, state: FSMContext):
             # Деактивируем объявление
             listing.is_active = False
             
-            session.add(transaction)
             await session.commit()
             
-            # Создаем клавиатуру для диалога
-            chat_keyboard = InlineKeyboardMarkup(inline_keyboard=[
-                [
-                    InlineKeyboardButton(text="📱 Получить номер", callback_data=f"get_number:{transaction.id}"),
-                    InlineKeyboardButton(text="⚠️ Открыть спор", callback_data=f"open_dispute:{transaction.id}")
-                ],
-                [
-                    InlineKeyboardButton(text="⭐️ Оставить отзыв", callback_data=f"leave_review:{transaction.id}")
-                ]
-            ])
+            # Создаем ссылку на чат
+            chat_link = f"https://t.me/c/{callback.message.chat.id}/{transaction.id:010d}"
             
             # Уведомляем покупателя
+            buyer_keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="💬 Открыть чат с продавцом", url=chat_link)],
+                [InlineKeyboardButton(text="⚖️ Открыть спор", callback_data=f"open_dispute:{transaction.id}")],
+                [InlineKeyboardButton(text="⭐️ Оставить отзыв", callback_data=f"leave_review:{seller.telegram_id}")]
+            ])
+            
             await callback.message.edit_text(
-                "✅ Покупка успешно совершена!\n\n"
-                f"Сервис: {available_services[listing.service]}\n"
-                f"Сумма: {listing.price} USDT\n"
+                f"✅ Номер успешно куплен!\n\n"
+                f"Сервис: {listing.service}\n"
+                f"Цена: {listing.price:.2f} ROXY\n"
                 f"Продавец: @{seller.username or 'Пользователь'}\n\n"
-                "Выберите действие:",
-                reply_markup=chat_keyboard
+                f"💬 Вы можете открыть чат с продавцом для получения номера.",
+                reply_markup=buyer_keyboard
             )
             
             # Уведомляем продавца
-            try:
-                await callback.bot.send_message(
-                    seller.telegram_id,
-                    f"💰 Ваше объявление куплено!\n\n"
-                    f"Сервис: {available_services[listing.service]}\n"
-                    f"Номер: {listing.phone_number}\n"
-                    f"Сумма: {listing.price} USDT\n"
-                    f"Покупатель: @{buyer.username or 'Пользователь'}\n\n"
-                    "Ожидайте запроса номера от покупателя.",
-                    reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
-                        InlineKeyboardButton(text="📱 Отправить номер", callback_data=f"send_number:{transaction.id}")
-                    ]])
-                )
-            except Exception as e:
-                logger.error(f"Failed to notify seller {seller.telegram_id}: {e}")
-                
-        except Exception as e:
-            logger.error(f"Error in process_buy: {e}")
-            await callback.message.edit_text(
-                "❌ Произошла ошибка при покупке.",
-                reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
-                    InlineKeyboardButton(text="↩️ Назад", callback_data="buy_cancel")
-                ]])
+            seller_keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="💬 Открыть чат с покупателем", url=chat_link)],
+                [InlineKeyboardButton(text="📱 Отправить номер", callback_data=f"send_number:{transaction.id}")]
+            ])
+            
+            await callback.bot.send_message(
+                seller.telegram_id,
+                f"💰 Ваш номер был куплен!\n\n"
+                f"Сервис: {listing.service}\n"
+                f"Цена: {listing.price:.2f} ROXY\n"
+                f"Покупатель: @{buyer.username or 'Пользователь'}\n\n"
+                f"💬 Откройте чат с покупателем для отправки номера.",
+                reply_markup=seller_keyboard
             )
+            
+    except Exception as e:
+        logger.error(f"Error in process_buy: {e}")
+        await callback.answer("❌ Произошла ошибка при покупке номера", show_alert=True)
 
 @router.callback_query(lambda c: c.data.startswith("get_number:"))
 async def get_number(callback: types.CallbackQuery):

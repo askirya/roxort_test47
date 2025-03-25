@@ -164,7 +164,7 @@ async def show_users(message: types.Message):
             for user in recent_users:
                 response += f"ID: {user.telegram_id}\n"
                 response += f"Username: @{user.username or 'Нет'}\n"
-                response += f"Баланс: {user.balance} USDT\n"
+                response += f"Баланс: {user.balance:.2f} ROXY\n"
                 response += f"Рейтинг: ⭐️ {user.rating:.1f}\n"
                 response += f"Регистрация: {user.created_at.strftime('%d.%m.%Y %H:%M')}\n"
                 response += "➖➖➖➖➖➖➖➖➖➖\n"
@@ -193,7 +193,7 @@ async def manage_balances(message: types.Message, state: FSMContext):
             keyboard = []
             for user in users:
                 keyboard.append([InlineKeyboardButton(
-                    text=f"👤 @{user.username or 'Пользователь'} | 💰 {user.balance} USDT",
+                    text=f"👤 @{user.username or 'Пользователь'} | 💰 {user.balance:.2f} ROXY",
                     callback_data=f"manage_balance:{user.telegram_id}"
                 )])
             
@@ -239,7 +239,7 @@ async def process_balance_action(callback: types.CallbackQuery, state: FSMContex
     await state.update_data(action=action)
     
     await callback.message.edit_text(
-        "Введите сумму в USDT:",
+        "Введите сумму в ROXY:",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(
             text="❌ Отмена",
             callback_data="cancel_admin_action"
@@ -283,8 +283,8 @@ async def process_amount(message: types.Message, state: FSMContext):
             await session.commit()
             
             await message.answer(
-                f"✅ Баланс пользователя успешно {'пополнен' if action == 'add' else 'списан'} на {amount} USDT\n"
-                f"Текущий баланс: {user.balance} USDT",
+                f"✅ Баланс пользователя успешно {'пополнен' if action == 'add' else 'списан'} на {amount:.2f} ROXY\n"
+                f"Текущий баланс: {user.balance:.2f} ROXY",
                 reply_markup=get_admin_keyboard()
             )
             
@@ -292,8 +292,8 @@ async def process_amount(message: types.Message, state: FSMContext):
             try:
                 await message.bot.send_message(
                     user_id,
-                    f"💰 Ваш баланс был {'пополнен' if action == 'add' else 'списан'} на {amount} USDT\n"
-                    f"Текущий баланс: {user.balance} USDT"
+                    f"💰 Ваш баланс был {'пополнен' if action == 'add' else 'списан'} на {amount:.2f} ROXY\n"
+                    f"Текущий баланс: {user.balance:.2f} ROXY"
                 )
             except Exception as e:
                 logger.error(f"Failed to notify user {user_id} about balance change: {e}")

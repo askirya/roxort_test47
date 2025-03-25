@@ -173,61 +173,46 @@ async def show_profile(message: Message):
         )
 
 @router.message(F.text == "💳 Баланс")
-async def show_balance(message: Message):
+async def show_balance(message: types.Message):
     """Показывает баланс пользователя"""
     try:
         async with async_session() as session:
-            user = await session.scalar(
-                select(User).where(User.telegram_id == message.from_user.id)
-            )
-            
+            user = await session.get(User, message.from_user.id)
             if not user:
-                await message.answer("Ошибка: пользователь не найден")
+                await message.answer(
+                    "❌ Пожалуйста, сначала зарегистрируйтесь.",
+                    reply_markup=get_main_keyboard()
+                )
                 return
-                
-            # Получаем статистику
-            total_sales = await session.scalar(
-                select(func.count(Transaction.id))
-                .where(Transaction.seller_id == user.id)
-                .where(Transaction.status == "completed")
+            
+            # Получаем статистику транзакций
+            transactions_query = select(Transaction).where(
+                or_(
+                    Transaction.buyer_id == user.telegram_id,
+                    Transaction.seller_id == user.telegram_id
+                )
             )
+            transactions_result = await session.execute(transactions_query)
+            transactions = transactions_result.scalars().all()
             
-            total_purchases = await session.scalar(
-                select(func.count(Transaction.id))
-                .where(Transaction.buyer_id == user.id)
-                .where(Transaction.status == "completed")
-            )
+            total_bought = sum(t.amount for t in transactions if t.buyer_id == user.telegram_id)
+            total_sold = sum(t.amount for t in transactions if t.seller_id == user.telegram_id)
             
-            # Получаем средний рейтинг
-            avg_rating = await session.scalar(
-                select(func.avg(Review.rating))
-                .where(Review.reviewed_id == user.id)
-            )
+            response = f"💰 Ваш баланс: {user.balance:.2f} ROXY\n\n"
+            response += f"📊 Статистика:\n"
+            response += f"Куплено на: {total_bought:.2f} ROXY\n"
+            response += f"Продано на: {total_sold:.2f} ROXY\n"
             
-            if avg_rating is None:
-                avg_rating = 0.0
+            if user.balance >= 100:
+                response += "\n💡 Вы можете вывести средства в USDT (минимум 100 ROXY)"
             
-            # Формируем сообщение
-            text = (
-                f"💰 Ваш баланс: {user.balance:.2f} ROXY\n\n"
-                f"📊 Статистика:\n"
-                f"• Продаж: {total_sales}\n"
-                f"• Покупок: {total_purchases}\n"
-                f"• Средний рейтинг: {avg_rating:.1f} ⭐️\n\n"
-                f"💳 Вывод доступен от 100 ROXY\n"
-                f"💱 Курс: 10 ROXY = 1 USDT"
-            )
-            
-            keyboard = InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="💳 Вывод в USDT", callback_data="withdraw")],
-                [InlineKeyboardButton(text="🎁 Активировать промокод", callback_data="activate_promo")]
-            ])
-            
-            await message.answer(text, reply_markup=keyboard)
-            
+            await message.answer(response, reply_markup=get_main_keyboard())
     except Exception as e:
-        logger.error(f"Ошибка при показе баланса: {e}")
-        await message.answer("Произошла ошибка при получении баланса")
+        logger.error(f"Error in show_balance: {e}")
+        await message.answer(
+            "❌ Произошла ошибка при получении баланса.",
+            reply_markup=get_main_keyboard()
+        )
 
 @router.message(lambda message: message.text == "📱 Купить номер")
 async def start_buying(message: Message, state: FSMContext):
