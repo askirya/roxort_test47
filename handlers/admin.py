@@ -659,6 +659,200 @@ async def cancel_promo(callback: types.CallbackQuery, state: FSMContext):
     await state.clear()
     await show_promo_menu(callback.message)
 
+@router.callback_query(lambda c: c.data == "manage_disputes")
+async def manage_disputes(callback: types.CallbackQuery):
+    """Показывает список активных споров"""
+    if not await check_admin(callback.from_user.id):
+        await callback.answer("❌ У вас нет доступа к этой функции", show_alert=True)
+        return
+    
+    try:
+        async with async_session() as session:
+            # Получаем активные споры
+            disputes = await session.scalars(
+                select(Dispute)
+                .where(Dispute.status == "active")
+                .order_by(Dispute.created_at.desc())
+            )
+            disputes = disputes.all()
+            
+            if not disputes:
+                await callback.message.edit_text(
+                    "📋 Активных споров нет.",
+                    reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                        InlineKeyboardButton(text="↩️ Назад", callback_data="back_to_admin")
+                    ]])
+                )
+                return
+            
+            # Формируем список споров
+            text = "📋 Активные споры:\n\n"
+            keyboard = []
+            
+            for dispute in disputes:
+                transaction = await session.get(Transaction, dispute.transaction_id)
+                if not transaction:
+                    continue
+                
+                buyer = await session.get(User, dispute.buyer_id)
+                seller = await session.get(User, dispute.seller_id)
+                
+                if not buyer or not seller:
+                    continue
+                
+                text += (
+                    f"ID спора: {dispute.id}\n"
+                    f"Сумма: {transaction.amount:.2f} ROXY\n"
+                    f"Покупатель: @{buyer.username or 'Пользователь'}\n"
+                    f"Продавец: @{seller.username or 'Пользователь'}\n"
+                    f"Дата: {dispute.created_at.strftime('%d.%m.%Y %H:%M')}\n\n"
+                )
+                
+                keyboard.append([InlineKeyboardButton(
+                    text=f"⚖️ Решить спор #{dispute.id}",
+                    callback_data=f"resolve_dispute:{dispute.id}"
+                )])
+            
+            keyboard.append([InlineKeyboardButton(
+                text="↩️ Назад",
+                callback_data="back_to_admin"
+            )])
+            
+            await callback.message.edit_text(
+                text,
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
+            )
+            
+    except Exception as e:
+        logger.error(f"Error in manage_disputes: {e}")
+        await callback.answer("❌ Произошла ошибка при загрузке споров", show_alert=True)
+
+@router.callback_query(lambda c: c.data.startswith("resolve_dispute:"))
+async def resolve_dispute(callback: types.CallbackQuery):
+    """Показывает меню для решения спора"""
+    if not await check_admin(callback.from_user.id):
+        await callback.answer("❌ У вас нет доступа к этой функции", show_alert=True)
+        return
+    
+    try:
+        dispute_id = int(callback.data.split(":")[1])
+        
+        async with async_session() as session:
+            dispute = await session.get(Dispute, dispute_id)
+            if not dispute or dispute.status != "active":
+                await callback.answer("❌ Спор не найден или уже решен", show_alert=True)
+                return
+            
+            transaction = await session.get(Transaction, dispute.transaction_id)
+            buyer = await session.get(User, dispute.buyer_id)
+            seller = await session.get(User, dispute.seller_id)
+            
+            if not all([transaction, buyer, seller]):
+                await callback.answer("❌ Ошибка: данные не найдены", show_alert=True)
+                return
+            
+            keyboard = [
+                [
+                    InlineKeyboardButton(
+                        text="👤 Покупатель",
+                        callback_data=f"dispute_winner:{dispute_id}:buyer"
+                    )
+                ],
+                [
+                    InlineKeyboardButton(
+                        text="👤 Продавец",
+                        callback_data=f"dispute_winner:{dispute_id}:seller"
+                    )
+                ],
+                [
+                    InlineKeyboardButton(
+                        text="↩️ Назад",
+                        callback_data="manage_disputes"
+                    )
+                ]
+            ]
+            
+            await callback.message.edit_text(
+                f"⚖️ Решение спора #{dispute.id}\n\n"
+                f"Сумма: {transaction.amount:.2f} ROXY\n"
+                f"Покупатель: @{buyer.username or 'Пользователь'}\n"
+                f"Продавец: @{seller.username or 'Пользователь'}\n\n"
+                "Выберите победителя спора:",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
+            )
+            
+    except Exception as e:
+        logger.error(f"Error in resolve_dispute: {e}")
+        await callback.answer("❌ Произошла ошибка при решении спора", show_alert=True)
+
+@router.callback_query(lambda c: c.data.startswith("dispute_winner:"))
+async def process_dispute_winner(callback: types.CallbackQuery):
+    """Обрабатывает выбор победителя спора"""
+    if not await check_admin(callback.from_user.id):
+        await callback.answer("❌ У вас нет доступа к этой функции", show_alert=True)
+        return
+    
+    try:
+        _, dispute_id, winner = callback.data.split(":")
+        dispute_id = int(dispute_id)
+        
+        async with async_session() as session:
+            dispute = await session.get(Dispute, dispute_id)
+            if not dispute or dispute.status != "active":
+                await callback.answer("❌ Спор не найден или уже решен", show_alert=True)
+                return
+            
+            transaction = await session.get(Transaction, dispute.transaction_id)
+            buyer = await session.get(User, dispute.buyer_id)
+            seller = await session.get(User, dispute.seller_id)
+            
+            if not all([transaction, buyer, seller]):
+                await callback.answer("❌ Ошибка: данные не найдены", show_alert=True)
+                return
+            
+            # Определяем победителя
+            winner_id = buyer.telegram_id if winner == "buyer" else seller.telegram_id
+            winner_user = buyer if winner == "buyer" else seller
+            
+            # Переводим средства победителю
+            winner_user.balance += transaction.amount
+            
+            # Обновляем статусы
+            dispute.status = "resolved"
+            dispute.winner_id = winner_id
+            transaction.status = "completed"
+            
+            await session.commit()
+            
+            # Уведомляем участников
+            await callback.bot.send_message(
+                buyer.telegram_id,
+                f"⚖️ Спор #{dispute.id} решен!\n\n"
+                f"Победитель: @{winner_user.username or 'Пользователь'}\n"
+                f"Сумма: {transaction.amount:.2f} ROXY"
+            )
+            
+            await callback.bot.send_message(
+                seller.telegram_id,
+                f"⚖️ Спор #{dispute.id} решен!\n\n"
+                f"Победитель: @{winner_user.username or 'Пользователь'}\n"
+                f"Сумма: {transaction.amount:.2f} ROXY"
+            )
+            
+            # Возвращаемся к списку споров
+            await callback.message.edit_text(
+                f"✅ Спор #{dispute.id} успешно решен!\n\n"
+                f"Победитель: @{winner_user.username or 'Пользователь'}\n"
+                f"Сумма: {transaction.amount:.2f} ROXY",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                    InlineKeyboardButton(text="↩️ Назад к спорам", callback_data="manage_disputes")
+                ]])
+            )
+            
+    except Exception as e:
+        logger.error(f"Error in process_dispute_winner: {e}")
+        await callback.answer("❌ Произошла ошибка при обработке решения спора", show_alert=True)
+
 def register_admin_handlers(dp: Dispatcher):
     """Регистрация обработчиков для администраторов"""
     dp.include_router(router)

@@ -635,6 +635,136 @@ async def cancel_withdraw(callback: types.CallbackQuery, state: FSMContext):
         reply_markup=get_main_keyboard(callback.from_user.id)
     )
 
+@router.callback_query(lambda c: c.data.startswith("open_dispute:"))
+async def open_dispute(callback: types.CallbackQuery):
+    """Открывает спор по транзакции"""
+    try:
+        transaction_id = int(callback.data.split(":")[1])
+        
+        async with async_session() as session:
+            transaction = await session.get(Transaction, transaction_id)
+            if not transaction:
+                await callback.answer("❌ Транзакция не найдена", show_alert=True)
+                return
+            
+            # Проверяем, что пользователь является участником сделки
+            if callback.from_user.id not in [transaction.buyer_id, transaction.seller_id]:
+                await callback.answer("❌ У вас нет доступа к этой сделке", show_alert=True)
+                return
+            
+            # Создаем спор
+            dispute = Dispute(
+                transaction_id=transaction_id,
+                buyer_id=transaction.buyer_id,
+                seller_id=transaction.seller_id,
+                status="active",
+                created_at=datetime.utcnow()
+            )
+            session.add(dispute)
+            
+            # Замораживаем средства
+            transaction.status = "disputed"
+            
+            await session.commit()
+            
+            # Уведомляем участников
+            await callback.message.edit_text(
+                "⚖️ Спор успешно открыт!\n\n"
+                "Администратор рассмотрит спор и примет решение.\n"
+                "Средства заморожены до решения спора."
+            )
+            
+            # Уведомляем второго участника
+            other_party_id = transaction.seller_id if callback.from_user.id == transaction.buyer_id else transaction.buyer_id
+            await callback.bot.send_message(
+                other_party_id,
+                "⚖️ По вашей сделке открыт спор!\n\n"
+                "Администратор рассмотрит спор и примет решение.\n"
+                "Средства заморожены до решения спора."
+            )
+            
+    except Exception as e:
+        logger.error(f"Error in open_dispute: {e}")
+        await callback.answer("❌ Произошла ошибка при открытии спора", show_alert=True)
+
+@router.callback_query(lambda c: c.data.startswith("leave_review:"))
+async def leave_review(callback: types.CallbackQuery, state: FSMContext):
+    """Начинает процесс оставления отзыва"""
+    try:
+        transaction_id = int(callback.data.split(":")[1])
+        
+        async with async_session() as session:
+            transaction = await session.get(Transaction, transaction_id)
+            if not transaction:
+                await callback.answer("❌ Транзакция не найдена", show_alert=True)
+                return
+            
+            # Проверяем, что пользователь является участником сделки
+            if callback.from_user.id not in [transaction.buyer_id, transaction.seller_id]:
+                await callback.answer("❌ У вас нет доступа к этой сделке", show_alert=True)
+                return
+            
+            # Определяем, кому оставляем отзыв
+            target_user_id = transaction.seller_id if callback.from_user.id == transaction.buyer_id else transaction.buyer_id
+            
+            # Создаем клавиатуру с кнопками лайка и дизлайка
+            keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                [
+                    InlineKeyboardButton(text="👍 Лайк", callback_data=f"review_like:{transaction_id}:{target_user_id}"),
+                    InlineKeyboardButton(text="👎 Дизлайк", callback_data=f"review_dislike:{transaction_id}:{target_user_id}")
+                ]
+            ])
+            
+            await callback.message.edit_text(
+                "⭐️ Оставьте отзыв о пользователе:",
+                reply_markup=keyboard
+            )
+            
+    except Exception as e:
+        logger.error(f"Error in leave_review: {e}")
+        await callback.answer("❌ Произошла ошибка при создании отзыва", show_alert=True)
+
+@router.callback_query(lambda c: c.data.startswith("review_"))
+async def process_review(callback: types.CallbackQuery):
+    """Обрабатывает отзыв (лайк/дизлайк)"""
+    try:
+        _, action, transaction_id, target_user_id = callback.data.split(":")
+        transaction_id = int(transaction_id)
+        target_user_id = int(target_user_id)
+        
+        async with async_session() as session:
+            # Проверяем, что пользователь является участником сделки
+            transaction = await session.get(Transaction, transaction_id)
+            if not transaction or callback.from_user.id not in [transaction.buyer_id, transaction.seller_id]:
+                await callback.answer("❌ У вас нет доступа к этой сделке", show_alert=True)
+                return
+            
+            # Получаем пользователя, которому оставляем отзыв
+            target_user = await session.get(User, target_user_id)
+            if not target_user:
+                await callback.answer("❌ Пользователь не найден", show_alert=True)
+                return
+            
+            # Обновляем рейтинг
+            if action == "like":
+                target_user.rating += 1
+                await callback.answer("👍 Вы поставили лайк!")
+            else:
+                target_user.rating -= 1
+                await callback.answer("👎 Вы поставили дизлайк!")
+            
+            await session.commit()
+            
+            # Обновляем сообщение
+            await callback.message.edit_text(
+                "✅ Спасибо за отзыв!\n\n"
+                f"Текущий рейтинг пользователя: {target_user.rating:.1f}"
+            )
+            
+    except Exception as e:
+        logger.error(f"Error in process_review: {e}")
+        await callback.answer("❌ Произошла ошибка при обработке отзыва", show_alert=True)
+
 def register_common_handlers(dp: Dispatcher):
     """Регистрация обработчиков общих команд"""
     dp.include_router(router) 
