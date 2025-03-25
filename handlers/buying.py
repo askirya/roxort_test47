@@ -273,7 +273,7 @@ async def process_buy(callback: types.CallbackQuery, state: FSMContext):
             await session.commit()
             
             # Создаем ссылку на чат
-            chat_link = f"https://t.me/c/{callback.message.chat.id}/{transaction.id:010d}"
+            chat_link = f"https://t.me/c/{str(transaction.id).zfill(10)}"
             
             # Уведомляем покупателя
             buyer_keyboard = InlineKeyboardMarkup(inline_keyboard=[
@@ -284,10 +284,10 @@ async def process_buy(callback: types.CallbackQuery, state: FSMContext):
             
             await callback.message.edit_text(
                 f"✅ Номер успешно куплен!\n\n"
-                f"Сервис: {listing.service}\n"
+                f"Сервис: {available_services[listing.service]}\n"
                 f"Цена: {listing.price:.2f} ROXY\n"
                 f"Продавец: @{seller.username or 'Пользователь'}\n\n"
-                f"💬 Вы можете открыть чат с продавцом для получения номера.",
+                f"💬 Вы можете открыть чат с продавцом для получения номера:\n{chat_link}",
                 reply_markup=buyer_keyboard
             )
             
@@ -300,10 +300,10 @@ async def process_buy(callback: types.CallbackQuery, state: FSMContext):
             await callback.bot.send_message(
                 seller.telegram_id,
                 f"💰 Ваш номер был куплен!\n\n"
-                f"Сервис: {listing.service}\n"
+                f"Сервис: {available_services[listing.service]}\n"
                 f"Цена: {listing.price:.2f} ROXY\n"
                 f"Покупатель: @{buyer.username or 'Пользователь'}\n\n"
-                f"💬 Откройте чат с покупателем для отправки номера.",
+                f"💬 Откройте чат с покупателем для отправки номера:\n{chat_link}",
                 reply_markup=seller_keyboard
             )
             
