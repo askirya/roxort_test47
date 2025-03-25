@@ -209,6 +209,12 @@ async def confirm_listing(callback: types.CallbackQuery):
                 await callback.answer("❌ Объявление не найдено", show_alert=True)
                 return
             
+            # Создаем inline клавиатуру для возврата в главное меню
+            keyboard = [[InlineKeyboardButton(
+                text="↩️ Вернуться в главное меню",
+                callback_data="back_to_main"
+            )]]
+            
             await callback.message.edit_text(
                 "✅ Объявление успешно создано!\n\n"
                 f"Сервис: {available_services[listing.service]}\n"
@@ -216,7 +222,7 @@ async def confirm_listing(callback: types.CallbackQuery):
                 f"Срок аренды: {listing.rental_period} часов\n"
                 f"Цена: {listing.price:.2f} ROXY\n\n"
                 "Ожидайте покупателя! 🎉",
-                reply_markup=get_main_keyboard(callback.from_user.id)
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
             )
             
     except Exception as e:
