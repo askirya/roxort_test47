@@ -655,8 +655,7 @@ async def open_dispute(callback: types.CallbackQuery):
             # Создаем спор
             dispute = Dispute(
                 transaction_id=transaction_id,
-                buyer_id=transaction.buyer_id,
-                seller_id=transaction.seller_id,
+                initiator_id=callback.from_user.id,
                 status="active",
                 created_at=datetime.utcnow()
             )
@@ -710,8 +709,8 @@ async def leave_review(callback: types.CallbackQuery, state: FSMContext):
             # Создаем клавиатуру с кнопками лайка и дизлайка
             keyboard = InlineKeyboardMarkup(inline_keyboard=[
                 [
-                    InlineKeyboardButton(text="👍 Лайк", callback_data=f"review_like:{transaction_id}:{target_user_id}"),
-                    InlineKeyboardButton(text="👎 Дизлайк", callback_data=f"review_dislike:{transaction_id}:{target_user_id}")
+                    InlineKeyboardButton(text="👍 Лайк", callback_data=f"review:like:{transaction_id}:{target_user_id}"),
+                    InlineKeyboardButton(text="👎 Дизлайк", callback_data=f"review:dislike:{transaction_id}:{target_user_id}")
                 ]
             ])
             
@@ -724,7 +723,7 @@ async def leave_review(callback: types.CallbackQuery, state: FSMContext):
         logger.error(f"Error in leave_review: {e}")
         await callback.answer("❌ Произошла ошибка при создании отзыва", show_alert=True)
 
-@router.callback_query(lambda c: c.data.startswith("review_"))
+@router.callback_query(lambda c: c.data.startswith("review:"))
 async def process_review(callback: types.CallbackQuery):
     """Обрабатывает отзыв (лайк/дизлайк)"""
     try:
