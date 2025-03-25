@@ -2,7 +2,7 @@ from aiogram import Router, types, Dispatcher, F
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 from aiogram.fsm.context import FSMContext
 from database.db import async_session
-from database.models import User, Transaction, Review, PromoCode
+from database.models import User, Transaction, Review, PromoCode, Dispute
 from sqlalchemy import select, or_, func
 from config import ADMIN_IDS
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 class UserStates(StatesGroup):
     entering_promo = State()
-    entering_withdraw_amount = State()
+    entering_withdrawal_amount = State()
     entering_usdt_address = State()
 
 def get_main_keyboard(user_id: int = None):
@@ -172,23 +172,62 @@ async def show_profile(message: Message):
             reply_markup=get_main_keyboard(message.from_user.id)
         )
 
-@router.message(lambda message: message.text == "💰 Баланс")
+@router.message(F.text == "💳 Баланс")
 async def show_balance(message: Message):
-    async with async_session() as session:
-        user = await session.get(User, message.from_user.id)
-        
-        if not user:
-            await message.answer(
-                "❌ Вы не зарегистрированы!\n"
-                "Пожалуйста, пройдите регистрацию:",
-                reply_markup=get_start_keyboard()
+    """Показывает баланс пользователя"""
+    try:
+        async with async_session() as session:
+            user = await session.scalar(
+                select(User).where(User.telegram_id == message.from_user.id)
             )
-            return
-        
-        await message.answer(
-            f"💰 Ваш текущий баланс: {user.balance} USDT",
-            reply_markup=get_main_keyboard(message.from_user.id)
-        )
+            
+            if not user:
+                await message.answer("Ошибка: пользователь не найден")
+                return
+                
+            # Получаем статистику
+            total_sales = await session.scalar(
+                select(func.count(Transaction.id))
+                .where(Transaction.seller_id == user.id)
+                .where(Transaction.status == "completed")
+            )
+            
+            total_purchases = await session.scalar(
+                select(func.count(Transaction.id))
+                .where(Transaction.buyer_id == user.id)
+                .where(Transaction.status == "completed")
+            )
+            
+            # Получаем средний рейтинг
+            avg_rating = await session.scalar(
+                select(func.avg(Review.rating))
+                .where(Review.reviewed_id == user.id)
+            )
+            
+            if avg_rating is None:
+                avg_rating = 0.0
+            
+            # Формируем сообщение
+            text = (
+                f"💰 Ваш баланс: {user.balance:.2f} ROXY\n\n"
+                f"📊 Статистика:\n"
+                f"• Продаж: {total_sales}\n"
+                f"• Покупок: {total_purchases}\n"
+                f"• Средний рейтинг: {avg_rating:.1f} ⭐️\n\n"
+                f"💳 Вывод доступен от 100 ROXY\n"
+                f"💱 Курс: 10 ROXY = 1 USDT"
+            )
+            
+            keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="💳 Вывод в USDT", callback_data="withdraw")],
+                [InlineKeyboardButton(text="🎁 Активировать промокод", callback_data="activate_promo")]
+            ])
+            
+            await message.answer(text, reply_markup=keyboard)
+            
+    except Exception as e:
+        logger.error(f"Ошибка при показе баланса: {e}")
+        await message.answer("Произошла ошибка при получении баланса")
 
 @router.message(lambda message: message.text == "📱 Купить номер")
 async def start_buying(message: Message, state: FSMContext):
@@ -245,18 +284,66 @@ async def handle_withdraw(message: Message, state: FSMContext):
         )
     )
 
-@router.message(lambda message: message.text == "⚠️ Споры")
-async def handle_disputes(message: Message):
-    if not await check_user_registered(message.from_user.id):
-        await message.answer(
-            "❌ Вы не зарегистрированы!\n"
-            "Пожалуйста, пройдите регистрацию сначала.",
-            reply_markup=get_start_keyboard()
-        )
-        return
-    
-    from handlers.disputes import show_disputes
-    await show_disputes(message)
+@router.message(F.text == "⚖️ Споры")
+async def show_disputes(message: Message):
+    """Показывает активные споры пользователя"""
+    try:
+        async with async_session() as session:
+            user = await session.scalar(
+                select(User).where(User.telegram_id == message.from_user.id)
+            )
+            
+            if not user:
+                await message.answer("Ошибка: пользователь не найден")
+                return
+            
+            # Получаем активные споры
+            disputes = await session.execute(
+                select(Dispute)
+                .where(
+                    or_(
+                        Dispute.buyer_id == user.id,
+                        Dispute.seller_id == user.id
+                    )
+                )
+                .where(Dispute.status == "active")
+            )
+            disputes = disputes.scalars().all()
+            
+            if not disputes:
+                await message.answer("У вас нет активных споров")
+                return
+            
+            # Формируем сообщение для каждого спора
+            for dispute in disputes:
+                transaction = await session.get(Transaction, dispute.transaction_id)
+                if not transaction:
+                    continue
+                
+                other_user = await session.get(
+                    User,
+                    transaction.buyer_id if user.id == transaction.seller_id else transaction.seller_id
+                )
+                
+                text = (
+                    f"⚖️ Спор #{dispute.id}\n"
+                    f"Сделка: #{transaction.id}\n"
+                    f"Сумма: {transaction.amount:.2f} ROXY\n"
+                    f"Оппонент: @{other_user.username}\n"
+                    f"Статус: {dispute.status}\n"
+                    f"Причина: {dispute.reason}"
+                )
+                
+                keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="📝 Добавить комментарий", callback_data=f"dispute_comment_{dispute.id}")],
+                    [InlineKeyboardButton(text="✅ Завершить спор", callback_data=f"resolve_dispute_{dispute.id}")]
+                ])
+                
+                await message.answer(text, reply_markup=keyboard)
+                
+    except Exception as e:
+        logger.error(f"Ошибка при показе споров: {e}")
+        await message.answer("Произошла ошибка при получении списка споров")
 
 @router.message(lambda message: message.text == "⭐️ Отзывы")
 async def handle_reviews(message: Message):
@@ -443,9 +530,9 @@ async def start_withdraw(message: types.Message, state: FSMContext):
             InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_withdraw")
         ]])
     )
-    await state.set_state(UserStates.entering_withdraw_amount)
+    await state.set_state(UserStates.entering_withdrawal_amount)
 
-@router.message(UserStates.entering_withdraw_amount)
+@router.message(UserStates.entering_withdrawal_amount)
 async def process_withdraw_amount(message: types.Message, state: FSMContext):
     try:
         amount = float(message.text)

@@ -50,7 +50,7 @@ def get_admin_keyboard():
 async def check_admin(user_id: int) -> bool:
     return user_id in ADMIN_IDS
 
-@router.message(F.text == "🔑 Панель администратора")
+@router.message(F.text == "👑 Админ панель")
 async def show_admin_panel(message: types.Message):
     """Показывает панель администратора"""
     if message.from_user.id not in ADMIN_IDS:
@@ -73,7 +73,7 @@ async def show_admin_panel(message: types.Message):
             recent_transactions = transactions_result.scalars().all()
             
             # Формируем сообщение
-            response = "🔑 Панель администратора\n\n"
+            response = "👑 Панель администратора\n\n"
             response += f"📊 Статистика:\n"
             response += f"👥 Всего пользователей: {users_count}\n"
             response += f"📱 Активных объявлений: {active_listings}\n"
@@ -83,7 +83,7 @@ async def show_admin_panel(message: types.Message):
                 response += "💳 Последние транзакции:\n"
                 for tx in recent_transactions:
                     response += f"ID: {tx.id}\n"
-                    response += f"Сумма: {tx.amount} USDT\n"
+                    response += f"Сумма: {tx.amount:.2f} ROXY\n"
                     response += f"Статус: {tx.status}\n"
                     response += f"Дата: {tx.created_at.strftime('%d.%m.%Y %H:%M')}\n\n"
             
