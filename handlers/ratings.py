@@ -79,7 +79,10 @@ async def start_review(callback: types.CallbackQuery, state: FSMContext):
         if not transactions:
             await callback.message.edit_text(
                 "У вас нет завершенных сделок за последние 7 дней.",
-                reply_markup=get_main_keyboard(callback.from_user.id)
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(
+                    text="↩️ Назад",
+                    callback_data="cancel_review"
+                )]])
             )
             return
         
@@ -100,7 +103,10 @@ async def start_review(callback: types.CallbackQuery, state: FSMContext):
         if not keyboard:
             await callback.message.edit_text(
                 "Вы уже оставили отзывы по всем недавним сделкам.",
-                reply_markup=get_main_keyboard(callback.from_user.id)
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(
+                    text="↩️ Назад",
+                    callback_data="cancel_review"
+                )]])
             )
             return
         
@@ -134,7 +140,11 @@ async def process_rating(callback: types.CallbackQuery, state: FSMContext):
     
     await callback.message.edit_text(
         "Напишите комментарий к отзыву:\n"
-        "Опишите ваш опыт работы с продавцом/покупателем"
+        "Опишите ваш опыт работы с продавцом/покупателем",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(
+            text="❌ Отмена",
+            callback_data="cancel_review"
+        )]])
     )
 
 @router.message(ReviewStates.entering_comment)
@@ -143,11 +153,17 @@ async def process_comment(message: types.Message, state: FSMContext):
     
     # Валидация комментария
     if len(comment) < 5:
-        await message.answer("❌ Комментарий слишком короткий. Напишите более подробный отзыв (минимум 5 символов).")
+        await message.answer(
+            "❌ Комментарий слишком короткий. Напишите более подробный отзыв (минимум 5 символов).",
+            reply_markup=get_main_keyboard(message.from_user.id)
+        )
         return
     
     if len(comment) > 500:
-        await message.answer("❌ Комментарий слишком длинный. Максимальная длина - 500 символов.")
+        await message.answer(
+            "❌ Комментарий слишком длинный. Максимальная длина - 500 символов.",
+            reply_markup=get_main_keyboard(message.from_user.id)
+        )
         return
     
     data = await state.get_data()
@@ -229,7 +245,6 @@ async def process_comment(message: types.Message, state: FSMContext):
                 )
             except Exception as e:
                 logger.error(f"Failed to notify user {reviewed_id} about new review: {e}")
-                # Продолжаем выполнение, даже если уведомление не удалось
                 
         except Exception as e:
             logger.error(f"Error in process_comment: {e}")
@@ -255,74 +270,99 @@ async def show_my_reviews(callback: types.CallbackQuery):
         if not reviews:
             await callback.message.edit_text(
                 "У вас пока нет отзывов.",
-                reply_markup=get_main_keyboard(callback.from_user.id)
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(
+                    text="↩️ Назад",
+                    callback_data="cancel_review"
+                )]])
             )
             return
         
-        for review in reviews:
-            reviewer = await session.get(User, review.reviewer_id)
-            transaction = await session.get(Transaction, review.transaction_id)
-            
-            await callback.message.answer(
-                f"⭐️ Отзыв от {'покупателя' if reviewer.telegram_id == transaction.buyer_id else 'продавца'}\n"
-                f"Оценка: {'⭐' * review.rating}\n"
-                f"Комментарий: {review.comment}\n"
-                f"Сумма сделки: {transaction.amount} USDT\n"
-                f"Дата: {review.created_at.strftime('%d.%m.%Y %H:%M')}"
+        # Отправляем первый отзыв с кнопкой "Следующий"
+        if len(reviews) > 1:
+            keyboard = [[InlineKeyboardButton(
+                text="➡️ Следующий",
+                callback_data="next_review:1"
+            )]]
+        else:
+            keyboard = [[InlineKeyboardButton(
+                text="↩️ Назад",
+                callback_data="cancel_review"
+            )]]
+        
+        review = reviews[0]
+        reviewer = await session.get(User, review.reviewer_id)
+        transaction = await session.get(Transaction, review.transaction_id)
+        
+        await callback.message.edit_text(
+            f"⭐️ Отзыв от {'покупателя' if reviewer.telegram_id == transaction.buyer_id else 'продавца'}\n"
+            f"Оценка: {'⭐' * review.rating}\n"
+            f"Комментарий: {review.comment}\n"
+            f"Сумма сделки: {transaction.amount} USDT\n"
+            f"Дата: {review.created_at.strftime('%d.%m.%Y %H:%M')}",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
+        )
+
+@router.callback_query(lambda c: c.data.startswith("next_review:"))
+async def show_next_review(callback: types.CallbackQuery):
+    current_index = int(callback.data.split(":")[1])
+    
+    async with async_session() as session:
+        reviews_query = select(Review).where(
+            Review.reviewed_id == callback.from_user.id
+        ).order_by(Review.created_at.desc())
+        
+        result = await session.execute(reviews_query)
+        reviews = result.scalars().all()
+        
+        if current_index + 1 >= len(reviews):
+            await callback.message.edit_text(
+                "Это был последний отзыв.",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(
+                    text="↩️ Назад",
+                    callback_data="cancel_review"
+                )]])
             )
+            return
+        
+        review = reviews[current_index + 1]
+        reviewer = await session.get(User, review.reviewer_id)
+        transaction = await session.get(Transaction, review.transaction_id)
+        
+        keyboard = []
+        if current_index + 1 > 0:
+            keyboard.append([InlineKeyboardButton(
+                text="⬅️ Предыдущий",
+                callback_data=f"next_review:{current_index}"
+            )])
+        if current_index + 1 < len(reviews) - 1:
+            keyboard.append([InlineKeyboardButton(
+                text="➡️ Следующий",
+                callback_data=f"next_review:{current_index + 1}"
+            )])
+        keyboard.append([InlineKeyboardButton(
+            text="↩️ Назад",
+            callback_data="cancel_review"
+        )])
+        
+        await callback.message.edit_text(
+            f"⭐️ Отзыв от {'покупателя' if reviewer.telegram_id == transaction.buyer_id else 'продавца'}\n"
+            f"Оценка: {'⭐' * review.rating}\n"
+            f"Комментарий: {review.comment}\n"
+            f"Сумма сделки: {transaction.amount} USDT\n"
+            f"Дата: {review.created_at.strftime('%d.%m.%Y %H:%M')}",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
+        )
 
 @router.callback_query(lambda c: c.data == "cancel_review")
 async def cancel_review(callback: types.CallbackQuery, state: FSMContext):
     await state.clear()
     await callback.message.edit_text(
         "❌ Отзыв отменен.",
-        reply_markup=get_main_keyboard(callback.from_user.id)
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(
+            text="↩️ В главное меню",
+            callback_data="back_to_main"
+        )]])
     )
-
-async def show_reviews(message: types.Message):
-    """Показывает отзывы пользователя"""
-    try:
-        async with async_session() as session:
-            user = await session.get(User, message.from_user.id)
-            
-            # Получаем отзывы о пользователе
-            reviews_query = select(Review).where(Review.reviewed_id == user.telegram_id)
-            reviews_result = await session.execute(reviews_query)
-            reviews = reviews_result.scalars().all()
-            
-            if not reviews:
-                await message.answer(
-                    "У вас пока нет отзывов.",
-                    reply_markup=get_main_keyboard(message.from_user.id)
-                )
-                return
-            
-            # Формируем сообщение с отзывами
-            response = f"⭐️ Ваш рейтинг: {user.rating:.1f}\n"
-            response += f"Количество отзывов: {len(reviews)}\n\n"
-            response += "📝 Отзывы:\n\n"
-            
-            for review in reviews:
-                reviewer = await session.get(User, review.reviewer_id)
-                transaction = await session.get(Transaction, review.transaction_id)
-                
-                response += f"От: @{reviewer.username if reviewer else 'Пользователь'}\n"
-                response += f"Оценка: {'⭐️' * review.rating}\n"
-                response += f"Комментарий: {review.comment}\n"
-                if transaction:
-                    response += f"Сумма сделки: {transaction.amount} USDT\n"
-                response += f"Дата: {review.created_at.strftime('%d.%m.%Y %H:%M')}\n\n"
-            
-            await message.answer(
-                response,
-                reply_markup=get_main_keyboard(message.from_user.id)
-            )
-    except Exception as e:
-        logger.error(f"Ошибка при показе отзывов: {e}")
-        await message.answer(
-            "Произошла ошибка при получении списка отзывов.",
-            reply_markup=get_main_keyboard(message.from_user.id)
-        )
 
 def register_rating_handlers(dp: Dispatcher):
     """Регистрация обработчиков для рейтингов"""
