@@ -77,11 +77,12 @@ async def show_services_callback(callback: types.CallbackQuery, state: FSMContex
         reply_markup=get_services_keyboard()
     )
 
-@router.message(lambda message: message.text == "📱 Купить номер")
+@router.message(F.text == "🛒 Купить номер")
 async def start_buying(message: types.Message, state: FSMContext):
     """Начинает процесс покупки номера"""
     try:
         async with async_session() as session:
+            # Проверяем регистрацию пользователя
             user = await session.get(User, message.from_user.id)
             if not user:
                 await message.answer(
@@ -91,28 +92,32 @@ async def start_buying(message: types.Message, state: FSMContext):
                 return
             
             # Получаем активные объявления
-            listings_query = select(PhoneListing).where(
-                and_(
+            listings = await session.scalars(
+                select(PhoneListing)
+                .where(
                     PhoneListing.is_active == True,
                     PhoneListing.seller_id != message.from_user.id
                 )
-            ).order_by(PhoneListing.created_at.desc())
-            listings_result = await session.execute(listings_query)
-            listings = listings_result.scalars().all()
+                .order_by(PhoneListing.created_at.desc())
+            )
+            listings = listings.all()
             
             if not listings:
                 await message.answer(
-                    "❌ В данный момент нет доступных номеров для покупки.",
+                    "📭 Сейчас нет доступных номеров для покупки.",
                     reply_markup=get_main_keyboard()
                 )
                 return
             
-            # Формируем список объявлений
+            # Формируем клавиатуру с объявлениями
             keyboard = []
             for listing in listings:
                 seller = await session.get(User, listing.seller_id)
+                if not seller:
+                    continue
+                    
                 keyboard.append([InlineKeyboardButton(
-                    text=f"{listing.service} | {listing.price:.2f} ROXY | Продавец: @{seller.username or 'Пользователь'}",
+                    text=f"{available_services[listing.service]} | {listing.phone_number} | {listing.price:.2f} ROXY",
                     callback_data=f"buy_listing:{listing.id}"
                 )])
             
@@ -121,12 +126,12 @@ async def start_buying(message: types.Message, state: FSMContext):
                 callback_data="cancel_buying"
             )])
             
-            await state.set_state(BuyingStates.selecting_listing)
             await message.answer(
                 "📱 Доступные номера для покупки:\n\n"
                 "Выберите номер из списка:",
                 reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
             )
+            
     except Exception as e:
         logger.error(f"Error in start_buying: {e}")
         await message.answer(
