@@ -2,7 +2,7 @@ from aiogram import Router, types, F
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton
-from database.db import get_session, async_session
+from database.db import async_session
 from database.models import User, Transaction, Review, PhoneListing
 from datetime import datetime, timedelta
 from sqlalchemy import select, and_, or_
@@ -61,7 +61,7 @@ async def show_rating_menu(message: types.Message, state: FSMContext):
 async def start_review(callback: types.CallbackQuery, state: FSMContext):
     week_ago = datetime.utcnow() - timedelta(days=7)
     
-    async with await get_session() as session:
+    async with async_session() as session:
         # Получаем завершенные транзакции за последние 7 дней
         query = select(Transaction).where(
             and_(
@@ -154,7 +154,7 @@ async def process_comment(message: types.Message, state: FSMContext):
     transaction_id = data['transaction_id']
     rating = data['rating']
     
-    async with await get_session() as session:
+    async with async_session() as session:
         try:
             # Проверяем существование транзакции
             transaction = await session.get(Transaction, transaction_id)
@@ -243,7 +243,7 @@ async def process_comment(message: types.Message, state: FSMContext):
 
 @router.callback_query(lambda c: c.data == "my_reviews")
 async def show_my_reviews(callback: types.CallbackQuery):
-    async with await get_session() as session:
+    async with async_session() as session:
         # Получаем отзывы о пользователе
         reviews_query = select(Review).where(
             Review.reviewed_id == callback.from_user.id
