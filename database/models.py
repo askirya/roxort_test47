@@ -20,8 +20,10 @@ class User(Base):
     listings = relationship("PhoneListing", back_populates="seller")
     reviews_received = relationship("Review", foreign_keys="Review.reviewed_id", back_populates="reviewed")
     reviews_given = relationship("Review", foreign_keys="Review.reviewer_id", back_populates="reviewer")
-    disputes_created = relationship("Dispute", foreign_keys="Dispute.user_id", back_populates="user")
-    disputes_resolved = relationship("Dispute", foreign_keys="Dispute.resolved_by", back_populates="resolver")
+    # Обновленные связи для споров
+    disputes_as_buyer = relationship("Dispute", foreign_keys="Dispute.buyer_id", back_populates="buyer")
+    disputes_as_seller = relationship("Dispute", foreign_keys="Dispute.seller_id", back_populates="seller")
+    won_disputes = relationship("Dispute", foreign_keys="Dispute.winner_id", back_populates="winner")
 
 class PhoneListing(Base):
     __tablename__ = 'phone_listings'
@@ -84,10 +86,10 @@ class Dispute(Base):
     resolved_at = Column(DateTime, nullable=True)
     
     # Связи
-    transaction = relationship("Transaction", back_populates="dispute")
-    buyer = relationship("User", foreign_keys=[buyer_id], backref="disputes_as_buyer")
-    seller = relationship("User", foreign_keys=[seller_id], backref="disputes_as_seller")
-    winner = relationship("User", foreign_keys=[winner_id], backref="won_disputes")
+    transaction = relationship("Transaction", back_populates="disputes")
+    buyer = relationship("User", foreign_keys=[buyer_id], back_populates="disputes_as_buyer")
+    seller = relationship("User", foreign_keys=[seller_id], back_populates="disputes_as_seller")
+    winner = relationship("User", foreign_keys=[winner_id], back_populates="won_disputes")
 
 class Review(Base):
     __tablename__ = 'reviews'
