@@ -39,10 +39,10 @@ async def start_selling(message: types.Message, state: FSMContext):
             
             # Показываем список доступных сервисов
             keyboard = []
-            for service in SERVICES:
+            for service_id, service_name in available_services.items():
                 keyboard.append([InlineKeyboardButton(
-                    text=service,
-                    callback_data=f"select_service:{service}"
+                    text=service_name,
+                    callback_data=f"select_service:{service_id}"
                 )])
             
             keyboard.append([InlineKeyboardButton(
@@ -65,11 +65,11 @@ async def start_selling(message: types.Message, state: FSMContext):
 @router.callback_query(lambda c: c.data.startswith("select_service:"))
 async def process_service_selection(callback: types.CallbackQuery, state: FSMContext):
     """Обрабатывает выбор сервиса"""
-    service = callback.data.split(":")[1]
-    await state.update_data(service=service)
+    service_id = callback.data.split(":")[1]
+    await state.update_data(service=service_id)
     
     await callback.message.edit_text(
-        f"Вы выбрали сервис: {service}\n\n"
+        f"Вы выбрали сервис: {available_services[service_id]}\n\n"
         "Введите цену в ROXY (минимум 0.1 ROXY):",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(
             text="❌ Отмена",
@@ -150,7 +150,7 @@ async def process_price(message: types.Message, state: FSMContext):
             return
         
         data = await state.get_data()
-        service = data['service']
+        service_id = data['service']
         
         # Создаем объявление
         async with async_session() as session:
@@ -171,7 +171,7 @@ async def process_price(message: types.Message, state: FSMContext):
             # Создаем объявление
             listing = PhoneListing(
                 seller_id=message.from_user.id,
-                service=service,
+                service=service_id,
                 phone_number=data['phone'],
                 rental_period=data['period'],
                 price=price,
@@ -188,7 +188,7 @@ async def process_price(message: types.Message, state: FSMContext):
             
             await message.answer(
                 f"📱 Создание объявления:\n\n"
-                f"Сервис: {service}\n"
+                f"Сервис: {available_services[service_id]}\n"
                 f"Номер: {data['phone']}\n"
                 f"Срок аренды: {data['period']} часов\n"
                 f"Цена: {price:.2f} ROXY\n"
