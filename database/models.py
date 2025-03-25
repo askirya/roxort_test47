@@ -71,18 +71,23 @@ class Transaction(Base):
     )
 
 class Dispute(Base):
+    """Модель для хранения споров"""
     __tablename__ = "disputes"
     
     id = Column(Integer, primary_key=True)
     transaction_id = Column(Integer, ForeignKey("transactions.id"), nullable=False)
-    initiator_id = Column(Integer, nullable=False)  # ID пользователя, открывшего спор
-    status = Column(String, default="active")  # active, resolved, closed
-    winner_id = Column(Integer, nullable=True)  # ID победителя спора
+    buyer_id = Column(Integer, ForeignKey("users.telegram_id"), nullable=False)
+    seller_id = Column(Integer, ForeignKey("users.telegram_id"), nullable=False)
+    status = Column(String, default="open")  # open, active, resolved
+    winner_id = Column(Integer, ForeignKey("users.telegram_id"), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     resolved_at = Column(DateTime, nullable=True)
     
     # Связи
     transaction = relationship("Transaction", back_populates="dispute")
+    buyer = relationship("User", foreign_keys=[buyer_id], backref="disputes_as_buyer")
+    seller = relationship("User", foreign_keys=[seller_id], backref="disputes_as_seller")
+    winner = relationship("User", foreign_keys=[winner_id], backref="won_disputes")
 
 class Review(Base):
     __tablename__ = 'reviews'
