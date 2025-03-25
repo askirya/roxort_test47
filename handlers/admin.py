@@ -10,7 +10,7 @@ import logging
 from config import ADMIN_IDS
 from handlers.common import get_main_keyboard
 from aiogram import Dispatcher
-from aiogram.filters import Command
+from aiogram.filters import Command, StateFilter
 from aiogram.types import Message
 
 logger = logging.getLogger(__name__)
