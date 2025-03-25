@@ -8,6 +8,7 @@ from sqlalchemy import select
 from handlers.common import get_main_keyboard
 from .services import available_services, get_services_keyboard
 from log import logger
+import logging
 from aiogram import Dispatcher
 from aiogram.filters import Command
 from aiogram.types import Message
