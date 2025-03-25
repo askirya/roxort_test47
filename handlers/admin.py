@@ -1,13 +1,14 @@
-from aiogram import Router, F, types
+from aiogram import Router, types, F
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
-from database.db import get_session, async_session
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton
+from database.db import async_session
 from database.models import User, Transaction, Dispute, PhoneListing, Review
 from datetime import datetime, timedelta
-from sqlalchemy import select, and_, or_, func
-from config import ADMIN_IDS
+from sqlalchemy import select, func, and_, or_
 import logging
+from config import ADMIN_IDS
+from handlers.common import get_main_keyboard
 from aiogram import Dispatcher
 from aiogram.filters import Command
 from aiogram.types import Message
@@ -17,9 +18,10 @@ logger = logging.getLogger(__name__)
 router = Router()
 
 class AdminStates(StatesGroup):
-    waiting_for_user_id = State()
-    entering_balance = State()
-    entering_announcement = State()
+    selecting_user = State()
+    entering_amount = State()
+    entering_message = State()
+    selecting_listing = State()
 
 def get_admin_keyboard():
     """Создает клавиатуру администратора"""
@@ -29,8 +31,15 @@ def get_admin_keyboard():
             KeyboardButton(text="👥 Пользователи")
         ],
         [
-            KeyboardButton(text="⚙️ Настройки"),
-            KeyboardButton(text="↩️ Назад")
+            KeyboardButton(text="💰 Управление балансами"),
+            KeyboardButton(text="⚠️ Активные споры")
+        ],
+        [
+            KeyboardButton(text="📢 Сделать объявление"),
+            KeyboardButton(text="🔒 Заблокировать пользователя")
+        ],
+        [
+            KeyboardButton(text="❌ Выйти из панели админа")
         ]
     ]
     return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
@@ -38,7 +47,7 @@ def get_admin_keyboard():
 async def check_admin(user_id: int) -> bool:
     return user_id in ADMIN_IDS
 
-@router.message(lambda message: message.text == "🔑 Панель администратора")
+@router.message(F.text == "🔑 Панель администратора")
 async def show_admin_panel(message: types.Message):
     """Показывает панель администратора"""
     if message.from_user.id not in ADMIN_IDS:
@@ -86,7 +95,7 @@ async def show_admin_panel(message: types.Message):
             reply_markup=get_main_keyboard(message.from_user.id)
         )
 
-@router.message(lambda message: message.text == "📊 Статистика")
+@router.message(F.text == "📊 Статистика")
 async def show_statistics(message: types.Message):
     """Показывает подробную статистику"""
     if message.from_user.id not in ADMIN_IDS:
@@ -107,10 +116,25 @@ async def show_statistics(message: types.Message):
                 select(func.avg(User.rating))
             ) or 0
             
+            # Статистика за последние 24 часа
+            day_ago = datetime.utcnow() - timedelta(days=1)
+            new_users = await session.scalar(
+                select(func.count(User.telegram_id)).where(User.created_at >= day_ago)
+            ) or 0
+            
+            new_transactions = await session.scalar(
+                select(func.count(Transaction.id)).where(Transaction.created_at >= day_ago)
+            ) or 0
+            
+            platform_earnings = total_volume * (5 / 100) if total_volume else 0
+            
             response = "📊 Подробная статистика:\n\n"
             response += f"💰 Общий объем сделок: {total_volume:.2f} USDT\n"
             response += f"✅ Завершенных сделок: {completed_tx}\n"
             response += f"⭐️ Средний рейтинг: {avg_rating:.1f}\n"
+            response += f"🆕 Новых пользователей за 24ч: {new_users}\n"
+            response += f"💳 Новых сделок за 24ч: {new_transactions}\n"
+            response += f"📈 Заработок платформы: {platform_earnings:.2f} USDT"
             
             await message.answer(response, reply_markup=get_admin_keyboard())
     except Exception as e:
@@ -120,7 +144,7 @@ async def show_statistics(message: types.Message):
             reply_markup=get_admin_keyboard()
         )
 
-@router.message(lambda message: message.text == "👥 Пользователи")
+@router.message(F.text == "👥 Пользователи")
 async def show_users(message: types.Message):
     """Показывает список пользователей"""
     if message.from_user.id not in ADMIN_IDS:
@@ -129,17 +153,18 @@ async def show_users(message: types.Message):
     try:
         async with async_session() as session:
             # Получаем последних зарегистрированных пользователей
-            users_query = select(User).order_by(User.created_at.desc()).limit(5)
+            users_query = select(User).order_by(User.created_at.desc()).limit(10)
             users_result = await session.execute(users_query)
             recent_users = users_result.scalars().all()
             
-            response = "👥 Последние зарегистрированные пользователи:\n\n"
+            response = "👥 Последние 10 пользователей:\n\n"
             for user in recent_users:
                 response += f"ID: {user.telegram_id}\n"
-                response += f"Username: @{user.username}\n"
+                response += f"Username: @{user.username or 'Нет'}\n"
                 response += f"Баланс: {user.balance} USDT\n"
-                response += f"Рейтинг: {user.rating:.1f}\n"
-                response += f"Дата регистрации: {user.created_at.strftime('%d.%m.%Y %H:%M')}\n\n"
+                response += f"Рейтинг: ⭐️ {user.rating:.1f}\n"
+                response += f"Регистрация: {user.created_at.strftime('%d.%m.%Y %H:%M')}\n"
+                response += "➖➖➖➖➖➖➖➖➖➖\n"
             
             await message.answer(response, reply_markup=get_admin_keyboard())
     except Exception as e:
@@ -149,308 +174,347 @@ async def show_users(message: types.Message):
             reply_markup=get_admin_keyboard()
         )
 
-@router.message(lambda message: message.text == "↩️ Назад")
-async def back_to_main(message: types.Message):
-    """Возврат в главное меню"""
-    await message.answer(
-        "Главное меню:",
-        reply_markup=get_main_keyboard(message.from_user.id)
-    )
-
-@router.message(lambda message: message.text == "💰 Управление балансами")
-async def manage_balance_start(message: types.Message, state: FSMContext):
-    if not await check_admin(message.from_user.id):
-        return
-    
-    await state.set_state(AdminStates.waiting_for_user_id)
-    await message.answer(
-        "Введите ID пользователя для управления балансом:",
-        reply_markup=ReplyKeyboardMarkup(
-            keyboard=[[KeyboardButton(text="❌ Отмена")]],
-            resize_keyboard=True
-        )
-    )
-
-@router.message(AdminStates.waiting_for_user_id)
-async def process_user_id(message: types.Message, state: FSMContext):
-    if message.text == "❌ Отмена":
-        await state.clear()
-        await message.answer(
-            "Операция отменена.",
-            reply_markup=get_admin_keyboard()
-        )
+@router.message(F.text == "💰 Управление балансами")
+async def manage_balances(message: types.Message, state: FSMContext):
+    """Начинает процесс управления балансами"""
+    if message.from_user.id not in ADMIN_IDS:
         return
     
     try:
-        user_id = int(message.text)
-        async with await get_session() as session:
-            user = await session.get(User, user_id)
-            if not user:
-                await message.answer("❌ Пользователь не найден!")
-                return
+        async with async_session() as session:
+            # Получаем список пользователей с их балансами
+            users_query = select(User).order_by(User.balance.desc()).limit(10)
+            users_result = await session.execute(users_query)
+            users = users_result.scalars().all()
             
-            await state.update_data(user_id=user_id)
-            await state.set_state(AdminStates.entering_balance)
+            keyboard = []
+            for user in users:
+                keyboard.append([InlineKeyboardButton(
+                    text=f"👤 @{user.username or 'Пользователь'} | 💰 {user.balance} USDT",
+                    callback_data=f"manage_balance:{user.telegram_id}"
+                )])
             
+            keyboard.append([InlineKeyboardButton(
+                text="❌ Отмена",
+                callback_data="cancel_admin_action"
+            )])
+            
+            await state.set_state(AdminStates.selecting_user)
             await message.answer(
-                f"Текущий баланс пользователя: {user.balance} USDT\n"
-                "Введите новый баланс:"
+                "Выберите пользователя для управления балансом:",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
             )
-    except:
-        await message.answer("❌ Введите корректный ID пользователя!")
-
-@router.message(AdminStates.entering_balance)
-async def process_new_balance(message: types.Message, state: FSMContext):
-    if message.text == "❌ Отмена":
-        await state.clear()
+    except Exception as e:
+        logger.error(f"Ошибка при показе списка пользователей для управления балансом: {e}")
         await message.answer(
-            "Операция отменена.",
+            "Произошла ошибка при загрузке списка пользователей.",
             reply_markup=get_admin_keyboard()
         )
-        return
+
+@router.callback_query(lambda c: c.data.startswith("manage_balance:"))
+async def process_user_selection(callback: types.CallbackQuery, state: FSMContext):
+    """Обрабатывает выбор пользователя для управления балансом"""
+    user_id = int(callback.data.split(":")[1])
+    await state.update_data(user_id=user_id)
+    await state.set_state(AdminStates.entering_amount)
     
+    keyboard = [
+        [InlineKeyboardButton(text="➕ Пополнить", callback_data="balance_action:add")],
+        [InlineKeyboardButton(text="➖ Списать", callback_data="balance_action:subtract")],
+        [InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_admin_action")]
+    ]
+    
+    await callback.message.edit_text(
+        "Выберите действие:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
+    )
+
+@router.callback_query(lambda c: c.data.startswith("balance_action:"))
+async def process_balance_action(callback: types.CallbackQuery, state: FSMContext):
+    """Обрабатывает выбор действия с балансом"""
+    action = callback.data.split(":")[1]
+    await state.update_data(action=action)
+    
+    await callback.message.edit_text(
+        "Введите сумму в USDT:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(
+            text="❌ Отмена",
+            callback_data="cancel_admin_action"
+        )]])
+    )
+
+@router.message(AdminStates.entering_amount)
+async def process_amount(message: types.Message, state: FSMContext):
+    """Обрабатывает ввод суммы для изменения баланса"""
     try:
-        new_balance = float(message.text)
+        amount = float(message.text)
+        if amount <= 0:
+            raise ValueError("Amount must be positive")
+        
         data = await state.get_data()
         user_id = data['user_id']
+        action = data['action']
         
-        async with await get_session() as session:
+        async with async_session() as session:
             user = await session.get(User, user_id)
-            old_balance = user.balance
-            user.balance = new_balance
+            if not user:
+                await message.answer(
+                    "❌ Пользователь не найден.",
+                    reply_markup=get_admin_keyboard()
+                )
+                return
+            
+            if action == "subtract" and user.balance < amount:
+                await message.answer(
+                    "❌ Недостаточно средств на балансе пользователя.",
+                    reply_markup=get_admin_keyboard()
+                )
+                return
+            
+            # Изменяем баланс
+            if action == "add":
+                user.balance += amount
+            else:
+                user.balance -= amount
+            
             await session.commit()
             
             await message.answer(
-                f"✅ Баланс пользователя обновлен!\n"
-                f"Старый баланс: {old_balance} USDT\n"
-                f"Новый баланс: {new_balance} USDT",
+                f"✅ Баланс пользователя успешно {'пополнен' if action == 'add' else 'списан'} на {amount} USDT\n"
+                f"Текущий баланс: {user.balance} USDT",
                 reply_markup=get_admin_keyboard()
             )
             
             # Уведомляем пользователя
-            await message.bot.send_message(
-                user.telegram_id,
-                f"💰 Ваш баланс был изменен администратором\n"
-                f"Новый баланс: {new_balance} USDT"
-            )
-    except:
-        await message.answer("❌ Введите корректную сумму!")
+            try:
+                await message.bot.send_message(
+                    user_id,
+                    f"💰 Ваш баланс был {'пополнен' if action == 'add' else 'списан'} на {amount} USDT\n"
+                    f"Текущий баланс: {user.balance} USDT"
+                )
+            except Exception as e:
+                logger.error(f"Failed to notify user {user_id} about balance change: {e}")
+                
+    except ValueError:
+        await message.answer(
+            "❌ Пожалуйста, введите корректное число.",
+            reply_markup=get_admin_keyboard()
+        )
+    except Exception as e:
+        logger.error(f"Error in process_amount: {e}")
+        await message.answer(
+            "❌ Произошла ошибка при изменении баланса.",
+            reply_markup=get_admin_keyboard()
+        )
     
     await state.clear()
 
-@router.message(lambda message: message.text == "⚠️ Активные споры")
+@router.message(F.text == "⚠️ Активные споры")
 async def show_active_disputes(message: types.Message):
-    if not await check_admin(message.from_user.id):
+    """Показывает активные споры"""
+    if message.from_user.id not in ADMIN_IDS:
         return
     
-    async with await get_session() as session:
-        query = select(Dispute).where(Dispute.status == "open")
-        result = await session.execute(query)
-        disputes = result.scalars().all()
-        
-        if not disputes:
-            await message.answer("✅ Активных споров нет!")
-            return
-        
-        for dispute in disputes:
-            transaction = await session.get(Transaction, dispute.transaction_id)
-            buyer = await session.get(User, transaction.buyer_id)
-            seller = await session.get(User, transaction.seller_id)
+    try:
+        async with async_session() as session:
+            # Получаем активные споры
+            disputes_query = select(Dispute).where(
+                Dispute.status == "open"
+            ).order_by(Dispute.created_at.desc())
             
-            await message.answer(
-                f"⚠️ Спор #{dispute.id}\n\n"
-                f"Покупатель: @{buyer.username or buyer.telegram_id}\n"
-                f"Продавец: @{seller.username or seller.telegram_id}\n"
-                f"Сумма: {transaction.amount} USDT\n"
-                f"Описание: {dispute.description}\n"
-                f"Создан: {dispute.created_at.strftime('%d.%m.%Y %H:%M')}",
-                reply_markup=get_admin_dispute_keyboard(dispute.id)
-            )
-
-@router.message(lambda message: message.text == "📢 Сделать объявление")
-async def start_announcement(message: types.Message, state: FSMContext):
-    if not await check_admin(message.from_user.id):
-        return
-    
-    await state.set_state(AdminStates.entering_announcement)
-    await message.answer(
-        "Введите текст объявления для всех пользователей:",
-        reply_markup=ReplyKeyboardMarkup(
-            keyboard=[[KeyboardButton(text="❌ Отмена")]],
-            resize_keyboard=True
-        )
-    )
-
-@router.message(AdminStates.entering_announcement)
-async def process_announcement(message: types.Message, state: FSMContext):
-    if message.text == "❌ Отмена":
-        await state.clear()
+            result = await session.execute(disputes_query)
+            disputes = result.scalars().all()
+            
+            if not disputes:
+                await message.answer(
+                    "В данный момент нет активных споров.",
+                    reply_markup=get_admin_keyboard()
+                )
+                return
+            
+            response = "⚠️ Активные споры:\n\n"
+            for dispute in disputes:
+                transaction = await session.get(Transaction, dispute.transaction_id)
+                buyer = await session.get(User, transaction.buyer_id)
+                seller = await session.get(User, transaction.seller_id)
+                
+                response += f"ID спора: {dispute.id}\n"
+                response += f"Сумма: {transaction.amount} USDT\n"
+                response += f"Покупатель: @{buyer.username or 'Пользователь'}\n"
+                response += f"Продавец: @{seller.username or 'Пользователь'}\n"
+                response += f"Дата создания: {dispute.created_at.strftime('%d.%m.%Y %H:%M')}\n"
+                response += "➖➖➖➖➖➖➖➖➖➖\n"
+            
+            await message.answer(response, reply_markup=get_admin_keyboard())
+    except Exception as e:
+        logger.error(f"Ошибка при показе активных споров: {e}")
         await message.answer(
-            "Операция отменена.",
+            "Произошла ошибка при загрузке списка споров.",
             reply_markup=get_admin_keyboard()
         )
+
+@router.message(F.text == "📢 Сделать объявление")
+async def start_announcement(message: types.Message, state: FSMContext):
+    """Начинает процесс создания объявления"""
+    if message.from_user.id not in ADMIN_IDS:
         return
     
-    async with await get_session() as session:
-        try:
-            query = select(User)
-            result = await session.execute(query)
-            users = result.scalars().all()
+    await state.set_state(AdminStates.entering_message)
+    await message.answer(
+        "Введите текст объявления:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(
+            text="❌ Отмена",
+            callback_data="cancel_admin_action"
+        )]])
+    )
+
+@router.message(AdminStates.entering_message)
+async def process_announcement(message: types.Message, state: FSMContext):
+    """Обрабатывает создание объявления"""
+    try:
+        announcement_text = message.text.strip()
+        
+        async with async_session() as session:
+            # Получаем всех пользователей
+            users_query = select(User.telegram_id)
+            users_result = await session.execute(users_query)
+            users = users_result.scalars().all()
             
-            sent_count = 0
-            failed_count = 0
+            # Отправляем объявление всем пользователям
+            success_count = 0
+            fail_count = 0
             
-            for user in users:
+            for user_id in users:
                 try:
                     await message.bot.send_message(
-                        user.telegram_id,
-                        f"📢 Объявление от администрации:\n\n{message.text}"
+                        user_id,
+                        f"📢 Объявление от администратора:\n\n{announcement_text}"
                     )
-                    sent_count += 1
+                    success_count += 1
                 except Exception as e:
-                    logger.error(f"Failed to send announcement to user {user.telegram_id}: {e}")
-                    failed_count += 1
+                    logger.error(f"Failed to send announcement to user {user_id}: {e}")
+                    fail_count += 1
             
             await message.answer(
                 f"✅ Объявление отправлено!\n"
-                f"Успешно: {sent_count}\n"
-                f"Ошибок: {failed_count}",
+                f"Успешно: {success_count}\n"
+                f"Ошибок: {fail_count}",
                 reply_markup=get_admin_keyboard()
             )
             
-        except Exception as e:
-            logger.error(f"Error sending announcement: {e}")
-            await message.answer(
-                "❌ Произошла ошибка при отправке объявления.",
-                reply_markup=get_admin_keyboard()
-            )
+    except Exception as e:
+        logger.error(f"Error in process_announcement: {e}")
+        await message.answer(
+            "❌ Произошла ошибка при отправке объявления.",
+            reply_markup=get_admin_keyboard()
+        )
     
     await state.clear()
 
-@router.message(lambda message: message.text == "🔒 Заблокировать пользователя")
-async def block_user_start(message: types.Message, state: FSMContext):
-    if not await check_admin(message.from_user.id):
-        return
-    
-    await state.set_state(AdminStates.waiting_for_user_id)
-    await message.answer(
-        "Введите ID пользователя для блокировки/разблокировки:",
-        reply_markup=ReplyKeyboardMarkup(
-            keyboard=[[KeyboardButton(text="❌ Отмена")]],
-            resize_keyboard=True
-        )
-    )
-
-@router.message(AdminStates.waiting_for_user_id)
-async def process_block_user(message: types.Message, state: FSMContext):
-    if message.text == "❌ Отмена":
-        await state.clear()
-        await message.answer(
-            "Операция отменена.",
-            reply_markup=get_admin_keyboard()
-        )
+@router.message(F.text == "🔒 Заблокировать пользователя")
+async def start_user_block(message: types.Message, state: FSMContext):
+    """Начинает процесс блокировки пользователя"""
+    if message.from_user.id not in ADMIN_IDS:
         return
     
     try:
-        user_id = int(message.text)
-        async with await get_session() as session:
+        async with async_session() as session:
+            # Получаем список пользователей
+            users_query = select(User).order_by(User.created_at.desc()).limit(10)
+            users_result = await session.execute(users_query)
+            users = users_result.scalars().all()
+            
+            keyboard = []
+            for user in users:
+                status = "🔒" if user.is_blocked else "✅"
+                keyboard.append([InlineKeyboardButton(
+                    text=f"{status} @{user.username or 'Пользователь'} | ID: {user.telegram_id}",
+                    callback_data=f"block_user:{user.telegram_id}"
+                )])
+            
+            keyboard.append([InlineKeyboardButton(
+                text="❌ Отмена",
+                callback_data="cancel_admin_action"
+            )])
+            
+            await state.set_state(AdminStates.selecting_user)
+            await message.answer(
+                "Выберите пользователя для блокировки/разблокировки:",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
+            )
+    except Exception as e:
+        logger.error(f"Ошибка при показе списка пользователей для блокировки: {e}")
+        await message.answer(
+            "Произошла ошибка при загрузке списка пользователей.",
+            reply_markup=get_admin_keyboard()
+        )
+
+@router.callback_query(lambda c: c.data.startswith("block_user:"))
+async def process_user_block(callback: types.CallbackQuery):
+    """Обрабатывает блокировку/разблокировку пользователя"""
+    try:
+        user_id = int(callback.data.split(":")[1])
+        
+        async with async_session() as session:
             user = await session.get(User, user_id)
             if not user:
-                await message.answer("❌ Пользователь не найден!")
+                await callback.message.edit_text(
+                    "❌ Пользователь не найден.",
+                    reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(
+                        text="↩️ Назад",
+                        callback_data="cancel_admin_action"
+                    )]])
+                )
                 return
             
-            # Инвертируем статус блокировки
+            # Меняем статус блокировки
             user.is_blocked = not user.is_blocked
             await session.commit()
             
-            status = "заблокирован" if user.is_blocked else "разблокирован"
-            await message.answer(
-                f"✅ Пользователь {status}!\n"
-                f"ID: {user.telegram_id}\n"
-                f"Username: @{user.username or 'Нет'}",
+            # Уведомляем пользователя
+            try:
+                await callback.message.bot.send_message(
+                    user_id,
+                    f"🔒 Ваш аккаунт был {'заблокирован' if user.is_blocked else 'разблокирован'} администратором."
+                )
+            except Exception as e:
+                logger.error(f"Failed to notify user {user_id} about block status: {e}")
+            
+            await callback.message.edit_text(
+                f"✅ Пользователь успешно {'заблокирован' if user.is_blocked else 'разблокирован'}.",
                 reply_markup=get_admin_keyboard()
             )
             
-            # Уведомляем пользователя
-            await message.bot.send_message(
-                user.telegram_id,
-                f"⚠️ Ваш аккаунт был {status} администратором."
-            )
-            
     except Exception as e:
-        logger.error(f"Error blocking user: {e}")
-        await message.answer("❌ Произошла ошибка при блокировке пользователя.")
-    
-    await state.clear()
+        logger.error(f"Error in process_user_block: {e}")
+        await callback.message.edit_text(
+            "❌ Произошла ошибка при изменении статуса блокировки.",
+            reply_markup=get_admin_keyboard()
+        )
 
-@router.callback_query(lambda c: c.data.startswith("resolve_dispute_"))
-async def resolve_dispute(callback: types.CallbackQuery):
-    if not await check_admin(callback.from_user.id):
-        return
-    
-    try:
-        _, _, winner, dispute_id = callback.data.split("_")
-        dispute_id = int(dispute_id)
-        
-        async with await get_session() as session:
-            dispute = await session.get(Dispute, dispute_id)
-            if not dispute or dispute.status != "open":
-                await callback.message.edit_text("❌ Спор не найден или уже закрыт.")
-                return
-            
-            transaction = await session.get(Transaction, dispute.transaction_id)
-            buyer = await session.get(User, transaction.buyer_id)
-            seller = await session.get(User, transaction.seller_id)
-            
-            if winner == "buyer":
-                # Возвращаем деньги покупателю
-                buyer.balance += transaction.amount
-                seller.balance -= transaction.amount
-                resolution_text = "в пользу покупателя"
-            else:
-                # Оставляем деньги продавцу
-                resolution_text = "в пользу продавца"
-            
-            # Закрываем спор
-            dispute.status = "resolved"
-            dispute.resolved_at = datetime.utcnow()
-            dispute.resolved_by = callback.from_user.id
-            dispute.resolution = resolution_text
-            
-            await session.commit()
-            
-            # Уведомляем участников
-            await callback.message.edit_text(
-                f"✅ Спор #{dispute_id} закрыт {resolution_text}.\n"
-                f"Решение принято администратором @{callback.from_user.username or callback.from_user.id}"
-            )
-            
-            # Уведомляем покупателя
-            await callback.bot.send_message(
-                buyer.telegram_id,
-                f"✅ Спор по транзакции #{transaction.id} закрыт {resolution_text}."
-            )
-            
-            # Уведомляем продавца
-            await callback.bot.send_message(
-                seller.telegram_id,
-                f"✅ Спор по транзакции #{transaction.id} закрыт {resolution_text}."
-            )
-            
-    except Exception as e:
-        logger.error(f"Error resolving dispute: {e}")
-        await callback.message.edit_text("❌ Произошла ошибка при закрытии спора.")
-
-@router.message(lambda message: message.text == "❌ Выйти из панели админа")
+@router.message(F.text == "❌ Выйти из панели админа")
 async def exit_admin_panel(message: types.Message):
-    if not await check_admin(message.from_user.id):
+    """Выход из панели администратора"""
+    if message.from_user.id not in ADMIN_IDS:
         return
     
-    from handlers.common import get_main_keyboard
     await message.answer(
-        "👋 Вы вышли из панели администратора",
-        reply_markup=get_main_keyboard()
+        "Вы вышли из панели администратора.",
+        reply_markup=get_main_keyboard(message.from_user.id)
     )
+
+@router.callback_query(lambda c: c.data == "cancel_admin_action")
+async def cancel_admin_action(callback: types.CallbackQuery, state: FSMContext):
+    """Отмена действия администратора"""
+    await state.clear()
+    await callback.message.edit_text(
+        "❌ Действие отменено.",
+        reply_markup=get_admin_keyboard()
+    )
+
+def register_admin_handlers(dp: Dispatcher):
+    """Регистрация обработчиков для администраторов"""
+    dp.include_router(router)
 
 async def cmd_admin(message: Message):
     """Обработчик команды /admin"""
@@ -468,7 +532,4 @@ async def cmd_admin(message: Message):
         "/unblock - Разблокировать пользователя"
     )
 
-def register_admin_handlers(dp: Dispatcher):
-    """Регистрация обработчиков для администраторов"""
-    dp.message.register(cmd_admin, Command("admin"))
-    dp.include_router(router) 
+    dp.message.register(cmd_admin, Command("admin")) 
