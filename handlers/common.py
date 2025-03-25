@@ -423,7 +423,7 @@ async def handle_withdraw_amount(message: Message, state: FSMContext):
         )
 
 @router.message(F.text == "🎁 Активировать промокод")
-async def activate_promo(message: types.Message):
+async def activate_promo(message: types.Message, state: FSMContext):
     if not await check_user_registered(message.from_user.id):
         await message.answer(
             "❌ Вы не зарегистрированы!\n"
