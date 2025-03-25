@@ -201,10 +201,13 @@ async def show_balance(message: types.Message):
             response = f"💰 Ваш баланс: {user.balance:.2f} ROXY\n\n"
             response += f"📊 Статистика:\n"
             response += f"Куплено на: {total_bought:.2f} ROXY\n"
-            response += f"Продано на: {total_sold:.2f} ROXY\n"
+            response += f"Продано на: {total_sold:.2f} ROXY\n\n"
             
             if user.balance >= 100:
-                response += "\n💡 Вы можете вывести средства в USDT (минимум 100 ROXY)"
+                response += "💡 Вы можете вывести средства в USDT (минимум 100 ROXY)\n\n"
+            
+            response += "🎮 Вы также можете получить бесплатные ROXY в нашей кликер-игре!\n"
+            response += "@roxortcoin_bot"
             
             await message.answer(response, reply_markup=get_main_keyboard())
     except Exception as e:
@@ -433,7 +436,9 @@ async def activate_promo(message: types.Message, state: FSMContext):
         return
     
     await message.answer(
-        "Введите промокод:",
+        "Введите промокод:\n\n"
+        "🎮 Вы также можете получить промокод на бесплатные ROXY в нашей кликер-игре!\n"
+        "@roxortcoin_bot",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
             InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_promo")
         ]])
@@ -442,6 +447,7 @@ async def activate_promo(message: types.Message, state: FSMContext):
 
 @router.message(UserStates.entering_promo)
 async def process_promo(message: types.Message, state: FSMContext):
+    """Обрабатывает ввод промокода"""
     code = message.text.upper()
     
     async with async_session() as session:
@@ -459,9 +465,17 @@ async def process_promo(message: types.Message, state: FSMContext):
             )
             return
         
-        if promo.is_used:
+        if not promo.is_active:
             await message.answer(
-                "❌ Этот промокод уже использован.",
+                "❌ Этот промокод деактивирован.",
+                reply_markup=get_main_keyboard(message.from_user.id)
+            )
+            await state.clear()
+            return
+        
+        if promo.current_uses >= promo.max_uses:
+            await message.answer(
+                "❌ Этот промокод уже использован максимальное количество раз.",
                 reply_markup=get_main_keyboard(message.from_user.id)
             )
             await state.clear()
@@ -475,17 +489,31 @@ async def process_promo(message: types.Message, state: FSMContext):
             await state.clear()
             return
         
+        # Проверяем, не использовал ли пользователь уже этот промокод
+        if promo.used_by == message.from_user.id:
+            await message.answer(
+                "❌ Вы уже использовали этот промокод.",
+                reply_markup=get_main_keyboard(message.from_user.id)
+            )
+            await state.clear()
+            return
+        
         # Активируем промокод
         user = await session.get(User, message.from_user.id)
         user.balance += promo.amount
-        promo.is_used = True
+        promo.current_uses += 1
         promo.used_by = message.from_user.id
+        
+        # Если промокод использован максимальное количество раз, деактивируем его
+        if promo.current_uses >= promo.max_uses:
+            promo.is_active = False
         
         await session.commit()
         
         await message.answer(
             f"✅ Промокод успешно активирован!\n"
-            f"На ваш баланс начислено {promo.amount} ROXY",
+            f"На ваш баланс начислено {promo.amount} ROXY\n"
+            f"Осталось использований: {promo.max_uses - promo.current_uses}",
             reply_markup=get_main_keyboard(message.from_user.id)
         )
         await state.clear()
@@ -511,15 +539,21 @@ async def start_withdraw(message: types.Message, state: FSMContext):
     async with async_session() as session:
         user = await session.get(User, message.from_user.id)
         if user.balance < 100:
+            response = "❌ Минимальная сумма для вывода: 100 ROXY\n"
+            response += f"Ваш баланс: {user.balance} ROXY\n\n"
+            response += "🎮 Вы также можете получить бесплатные ROXY в нашей кликер-игре!\n"
+            response += "@roxortcoin_bot"
+            
             await message.answer(
-                "❌ Минимальная сумма для вывода: 100 ROXY\n"
-                f"Ваш баланс: {user.balance} ROXY",
+                response,
                 reply_markup=get_main_keyboard(message.from_user.id)
             )
             return
     
     await message.answer(
-        "Введите сумму для вывода в ROXY (минимум 100):",
+        "Введите сумму для вывода в ROXY (минимум 100):\n\n"
+        "🎮 Вы также можете получить бесплатные ROXY в нашей кликер-игре!\n"
+        "@roxortcoin_bot",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
             InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_withdraw")
         ]])

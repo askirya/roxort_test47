@@ -543,84 +543,154 @@ async def back_to_admin(callback: types.CallbackQuery):
     )
 
 @router.callback_query(lambda c: c.data == "create_promo")
-async def start_create_promo(callback: types.CallbackQuery, state: FSMContext):
+async def create_promo(callback: types.CallbackQuery, state: FSMContext):
     """Начинает процесс создания промокода"""
-    await state.set_state(AdminStates.creating_promo)
+    if not await check_admin(callback.from_user.id):
+        await callback.answer("❌ У вас нет доступа к этой функции", show_alert=True)
+        return
+    
+    await state.set_state("entering_promo_amount")
     await callback.message.edit_text(
         "Введите сумму промокода в ROXY:",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
-            InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_promo")
+            InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_promo_creation")
         ]])
     )
 
-@router.message(AdminStates.creating_promo)
+@router.message(StateFilter("entering_promo_amount"))
 async def process_promo_amount(message: types.Message, state: FSMContext):
     """Обрабатывает ввод суммы промокода"""
     try:
         amount = float(message.text)
         if amount <= 0:
-            raise ValueError
+            await message.answer(
+                "❌ Сумма должна быть больше 0. Попробуйте еще раз:",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                    InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_promo_creation")
+                ]])
+            )
+            return
         
         await state.update_data(promo_amount=amount)
-        await state.set_state(AdminStates.entering_promo_code)
+        await state.set_state("entering_promo_uses")
         
         await message.answer(
-            "Введите код промокода (например: SUMMER2024):",
+            "Введите максимальное количество использований (1-1000):",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
-                InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_promo")
+                InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_promo_creation")
             ]])
         )
     except ValueError:
         await message.answer(
-            "❌ Пожалуйста, введите корректную сумму (например: 10.5):",
+            "❌ Пожалуйста, введите корректное число. Попробуйте еще раз:",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
-                InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_promo")
+                InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_promo_creation")
             ]])
         )
 
-@router.message(AdminStates.entering_promo_code)
-async def process_promo_code(message: types.Message, state: FSMContext):
-    """Обрабатывает ввод кода промокода"""
-    code = message.text.upper()
-    
-    async with async_session() as session:
-        # Проверяем, не существует ли уже такой промокод
-        existing = await session.scalar(
-            select(PromoCode).where(PromoCode.code == code)
-        )
-        
-        if existing:
+@router.message(StateFilter("entering_promo_uses"))
+async def process_promo_uses(message: types.Message, state: FSMContext):
+    """Обрабатывает ввод количества использований"""
+    try:
+        max_uses = int(message.text)
+        if max_uses < 1 or max_uses > 1000:
             await message.answer(
-                "❌ Такой промокод уже существует. Введите другой код:",
+                "❌ Количество использований должно быть от 1 до 1000. Попробуйте еще раз:",
                 reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
-                    InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_promo")
+                    InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_promo_creation")
                 ]])
             )
             return
-    
-    data = await state.get_data()
-    amount = data['promo_amount']
-    
-    # Создаем промокод
-    promo = PromoCode(
-        code=code,
-        amount=amount,
-        created_by=message.from_user.id
-    )
-    
-    async with async_session() as session:
-        session.add(promo)
-        await session.commit()
-    
-    await state.clear()
-    await message.answer(
-        f"✅ Промокод успешно создан!\n\n"
-        f"Код: {code}\n"
-        f"Сумма: {amount} ROXY",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
-            InlineKeyboardButton(text="↩️ Назад", callback_data="promo_codes")
-        ]])
-    )
+        
+        await state.update_data(promo_uses=max_uses)
+        await state.set_state("entering_promo_codes")
+        
+        await message.answer(
+            "Введите промокоды (по одному в строке):\n"
+            "Например:\n"
+            "PROMO1\n"
+            "PROMO2\n"
+            "PROMO3",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_promo_creation")
+            ]])
+        )
+    except ValueError:
+        await message.answer(
+            "❌ Пожалуйста, введите корректное число. Попробуйте еще раз:",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_promo_creation")
+            ]])
+        )
+
+@router.message(StateFilter("entering_promo_codes"))
+async def process_promo_codes(message: types.Message, state: FSMContext):
+    """Обрабатывает ввод промокодов"""
+    try:
+        data = await state.get_data()
+        amount = data['promo_amount']
+        max_uses = data['promo_uses']
+        
+        # Разбиваем текст на строки и очищаем от пробелов
+        codes = [code.strip().upper() for code in message.text.split('\n') if code.strip()]
+        
+        if not codes:
+            await message.answer(
+                "❌ Пожалуйста, введите хотя бы один промокод. Попробуйте еще раз:",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                    InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_promo_creation")
+                ]])
+            )
+            return
+        
+        async with async_session() as session:
+            created_count = 0
+            failed_codes = []
+            
+            for code in codes:
+                try:
+                    promo = PromoCode(
+                        code=code,
+                        amount=amount,
+                        max_uses=max_uses,
+                        current_uses=0,
+                        is_active=True,
+                        created_by=message.from_user.id,
+                        created_at=datetime.utcnow()
+                    )
+                    session.add(promo)
+                    created_count += 1
+                except Exception as e:
+                    logger.error(f"Failed to create promo code {code}: {e}")
+                    failed_codes.append(code)
+            
+            await session.commit()
+            
+            response = f"✅ Создано промокодов: {created_count}\n"
+            response += f"Сумма: {amount} ROXY\n"
+            response += f"Использований: {max_uses}\n\n"
+            
+            if failed_codes:
+                response += "❌ Не удалось создать следующие промокоды:\n"
+                response += "\n".join(failed_codes)
+            
+            await message.answer(
+                response,
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                    InlineKeyboardButton(text="↩️ Назад", callback_data="back_to_admin")
+                ]])
+            )
+            await state.clear()
+            
+    except Exception as e:
+        logger.error(f"Error in process_promo_codes: {e}")
+        await message.answer(
+            "❌ Произошла ошибка при создании промокодов.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                InlineKeyboardButton(text="↩️ Назад", callback_data="back_to_admin")
+            ]])
+        )
+        await state.clear()
 
 @router.callback_query(lambda c: c.data == "list_promos")
 async def show_promos(callback: types.CallbackQuery):
@@ -653,11 +723,16 @@ async def show_promos(callback: types.CallbackQuery):
             ]])
         )
 
-@router.callback_query(lambda c: c.data == "cancel_promo")
-async def cancel_promo(callback: types.CallbackQuery, state: FSMContext):
+@router.callback_query(lambda c: c.data == "cancel_promo_creation")
+async def cancel_promo_creation(callback: types.CallbackQuery, state: FSMContext):
     """Отменяет создание промокода"""
     await state.clear()
-    await show_promo_menu(callback.message)
+    await callback.message.edit_text(
+        "❌ Создание промокода отменено.",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="↩️ Назад", callback_data="back_to_admin")
+        ]])
+    )
 
 @router.callback_query(lambda c: c.data == "manage_disputes")
 async def manage_disputes(callback: types.CallbackQuery):
@@ -853,15 +928,46 @@ async def process_dispute_winner(callback: types.CallbackQuery):
         logger.error(f"Error in process_dispute_winner: {e}")
         await callback.answer("❌ Произошла ошибка при обработке решения спора", show_alert=True)
 
+@router.callback_query(lambda c: c.data.startswith("delete_promo:"))
+async def delete_promo(callback: types.CallbackQuery):
+    """Удаляет промокод"""
+    if not await check_admin(callback.from_user.id):
+        await callback.answer("❌ У вас нет доступа к этой функции", show_alert=True)
+        return
+    
+    try:
+        promo_id = int(callback.data.split(":")[1])
+        
+        async with async_session() as session:
+            promo = await session.get(PromoCode, promo_id)
+            if not promo:
+                await callback.answer("❌ Промокод не найден", show_alert=True)
+                return
+            
+            # Удаляем промокод
+            await session.delete(promo)
+            await session.commit()
+            
+            await callback.message.edit_text(
+                f"✅ Промокод {promo.code} успешно удален!",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                    InlineKeyboardButton(text="↩️ Назад", callback_data="back_to_admin")
+                ]])
+            )
+            
+    except Exception as e:
+        logger.error(f"Error in delete_promo: {e}")
+        await callback.answer("❌ Произошла ошибка при удалении промокода", show_alert=True)
+
 def register_admin_handlers(dp: Dispatcher):
     """Регистрация обработчиков для администраторов"""
     dp.include_router(router)
     
     # Регистрируем все обработчики промокодов
     dp.callback_query.register(show_promo_menu, F.data == "promo_codes")
-    dp.callback_query.register(start_create_promo, F.data == "create_promo")
+    dp.callback_query.register(create_promo, F.data == "create_promo")
     dp.callback_query.register(show_promos, F.data == "list_promos")
-    dp.callback_query.register(cancel_promo, F.data == "cancel_promo")
+    dp.callback_query.register(cancel_promo_creation, F.data == "cancel_promo_creation")
     dp.callback_query.register(back_to_admin, F.data == "back_to_admin")
 
 async def cmd_admin(message: Message):

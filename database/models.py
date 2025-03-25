@@ -112,7 +112,9 @@ class PromoCode(Base):
     id = Column(Integer, primary_key=True)
     code = Column(String, unique=True, nullable=False)
     amount = Column(Float, nullable=False)  # Сумма в ROXY
-    is_used = Column(Boolean, default=False)
+    max_uses = Column(Integer, default=1)  # Максимальное количество использований
+    current_uses = Column(Integer, default=0)  # Текущее количество использований
+    is_active = Column(Boolean, default=True)  # Активен ли промокод
     used_by = Column(BigInteger, nullable=True)  # telegram_id пользователя, использовавшего промокод
     created_at = Column(DateTime, default=datetime.utcnow)
     expires_at = Column(DateTime, nullable=True)
